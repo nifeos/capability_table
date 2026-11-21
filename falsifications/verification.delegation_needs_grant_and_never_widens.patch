@@ -1,0 +1,22 @@
+Falsifies `capability_table::delegation_needs_grant_and_never_widens`.
+
+The defect: the `GRANT` check dropped from `Capability::delegate`, so a capability whose
+holder was never trusted to lend it is lent anyway, narrowed or not. This is the rule the
+crate's own documentation gives `GRANT` and the kernel's delegation applies.
+
+Expected to fail: `assert_ne!(source.rights.0 & GRANT_BIT, 0)` in the `Ok` arm, on a source
+without the `GRANT` bit and a request inside it.
+
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -128,9 +128,6 @@
+     /// Without `GRANT` the answer is [`Error::GrantRequired`], whatever `rights` asks for. With it,
+     /// asking for a right the source lacks is [`Error::CannotWiden`], not a silent clamp.
+     pub fn delegate(&self, rights: Rights) -> Result<Capability<O>, Error> {
+-        if !self.rights.allows(Rights::GRANT) {
+-            return Err(Error::GrantRequired);
+-        }
+         if !rights.is_subset_of(self.rights) {
+             return Err(Error::CannotWiden);
+         }
