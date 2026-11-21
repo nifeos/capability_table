@@ -207,7 +207,7 @@ mod storage {
     use super::{Capability, MAXIMUM_SLOTS};
 
     /// A thread's capability table: a flat array, an fd table with a type tag on each entry,
-    /// rather than seL4's tree of CNodes.
+    /// rather than seL4's tree of `CNode` objects.
     pub struct CapabilityTable<O, const N: usize> {
         slots: [Option<Capability<O>>; N],
         /// **Bit `i` set means slot `i` is empty**, so `insert`'s first free slot is one

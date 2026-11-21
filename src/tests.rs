@@ -414,7 +414,7 @@ fn rights_bits_are_the_wire_format() {
 /// `insert_at` is how a supervisor reserves the fault slot, so what matters is that the
 /// capability lands in THAT slot, the slot comes back as the receipt, and an occupied slot
 /// refuses rather than replaces (two things must never share the slot the kernel reads at
-/// START).
+/// start).
 #[test]
 fn insert_at_fills_exactly_the_named_slot() {
     let mut cs: CapabilityTable<Object, 4> = CapabilityTable::new();
