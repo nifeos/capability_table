@@ -560,3 +560,33 @@ fn an_error_prints_and_is_an_error() {
     let error: &dyn core::error::Error = &Error::NoFreeSlot;
     assert_eq!(error.to_string(), "the table is full");
 }
+
+/// **An empty slot costs nothing beyond its capability.** `Rights` never holds the zero word, so
+/// `Option` takes it for `None`, even over an object type with no spare bit pattern of its own.
+#[test]
+fn an_empty_slot_is_no_larger_than_a_capability() {
+    use core::mem::size_of;
+    assert_eq!(size_of::<Option<Rights>>(), size_of::<Rights>());
+    assert_eq!(
+        size_of::<Option<Capability<u64>>>(),
+        size_of::<Capability<u64>>()
+    );
+    assert_eq!(size_of::<Capability<u64>>(), 16);
+    // 64 slots of 16 bytes, the `u64` free word and two `u16` counts, rounded to eight.
+    assert_eq!(size_of::<CapabilityTable<u64, 64>>(), 1040);
+}
+
+/// The marker bit is no right: `from_bits` drops bit 31 with every other undefined bit, and
+/// `Debug` shows the rights alone.
+#[test]
+fn the_marker_bit_is_no_right() {
+    assert_eq!(Rights::from_bits(u32::MAX), Rights::ALL);
+    assert_eq!(Rights::from_bits(1 << 31), Rights::NONE);
+    assert_eq!(Rights::NONE.bits(), 0);
+    assert_eq!(Rights::ALL.bits(), 0b1_1111);
+    extern crate std;
+    assert_eq!(
+        std::format!("{:?}", Rights::READ.union(Rights::GRANT)),
+        "Rights(5)"
+    );
+}

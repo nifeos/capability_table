@@ -4,31 +4,31 @@ The defect: the two operands swapped inside `Rights::is_subset_of`, so the predi
 answers "does `other` fit inside `self`" while every caller reads it as the opposite.
 This is the single most plausible error in a one-line bitwise predicate.
 
-Expected to fail: `assert_eq!(derived.rights.0 & !src_rights.0, 0)` in
+Expected to fail: `assert_eq!(derived.rights.0.get() & !source_rights.0.get(), 0)` in
 `derive_never_widens_rights`, on a request holding a bit the source lacks.
 
 **This record discriminates where an earlier one did not.** Applied to an older harness,
 exactly this diff left ten of the crate's twelve harnesses green, the central theorem among
 them, because the theorem asserted
-`derived.rights.is_subset_of(src_rights)` while `derive` guards on
-`rights.is_subset_of(src.rights)`: one wrong predicate satisfied both sides. The harness
+`derived.rights.is_subset_of(source_rights)` while `derive` guards on
+`rights.is_subset_of(source.rights)`: one wrong predicate satisfied both sides. The harness
 now states the subset relation as `x & !y == 0`, which the implementation does not get
 to choose, and this diff turns it red.
 
 The record it replaces was the `CannotWiden` guard deleted from `derive`. The rewritten
-harness still catches that (`requested.0 & !src_rights.0` goes red on it); it is replaced
+harness still catches that (`requested.0.get() & !source_rights.0.get()` goes red on it); it is replaced
 rather than kept because a harness carries one record and the guard-drop was never the
 blind spot.
 
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -106,7 +106,7 @@
+@@ -124,7 +124,7 @@
  
      /// Is `self` no more than `other`? The subset test that [`CapabilityTable::derive`] turns on.
      pub const fn is_subset_of(self, other: Rights) -> bool {
--        self.0 & !other.0 == 0
-+        other.0 & !self.0 == 0
+-        self.bits() & !other.bits() == 0
++        other.bits() & !self.bits() == 0
      }
  }
  

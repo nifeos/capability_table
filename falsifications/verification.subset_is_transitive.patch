@@ -1,7 +1,7 @@
 Falsifies `capability_table::verification::subset_is_transitive`.
 
 The defect: the subset test tolerates one right's worth of slack,
-`(self.0 & !other.0).count_ones() <= 1` in place of an exact `== 0`.
+`(self.bits() & !other.bits()).count_ones() <= 1` in place of an exact `== 0`.
 
 **The defect is chosen to discriminate, and that is the point of this record.** The obvious
 mutation here is the dropped `!` that `verification.subset_is_reflexive.patch` uses, and it does
@@ -18,12 +18,12 @@ is exactly the laundering the doc comment says a flat subset check is safe becau
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -106,7 +106,7 @@
+@@ -124,7 +124,7 @@
  
      /// Is `self` no more than `other`? The subset test that [`CapabilityTable::derive`] turns on.
      pub const fn is_subset_of(self, other: Rights) -> bool {
--        self.0 & !other.0 == 0
-+        (self.0 & !other.0).count_ones() <= 1
+-        self.bits() & !other.bits() == 0
++        (self.bits() & !other.bits()).count_ones() <= 1
      }
  }
  

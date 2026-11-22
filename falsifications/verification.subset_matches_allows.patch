@@ -1,7 +1,7 @@
 Falsifies `capability_table::subset_matches_allows`.
 
-The defect: `is_subset_of` with its operands the wrong way round, `other.0 & !self.0`
-instead of `self.0 & !other.0`. This is the most plausible single defect the function
+The defect: `is_subset_of` with its operands the wrong way round, `other.bits() & !self.bits()`
+instead of `self.bits() & !other.bits()`. This is the most plausible single defect the function
 has, because "is self no more than other" and "does other hold at least self" are the
 same sentence read in two directions and the body is four tokens long.
 
@@ -19,12 +19,12 @@ property THROUGH the predicate being broken and so cannot see the break.
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -106,7 +106,7 @@
+@@ -124,7 +124,7 @@
  
      /// Is `self` no more than `other`? The subset test that [`CapabilityTable::derive`] turns on.
      pub const fn is_subset_of(self, other: Rights) -> bool {
--        self.0 & !other.0 == 0
-+        other.0 & !self.0 == 0
+-        self.bits() & !other.bits() == 0
++        other.bits() & !self.bits() == 0
      }
  }
  

@@ -1,22 +1,22 @@
 Falsifies `capability_table::from_bits_cannot_forge_a_right`.
 
-The defect: the mask dropped from `Rights::from_bits`, `Rights(bits)` instead of
-`Rights(bits & Rights::ALL.0)`. `from_bits` takes an attacker-controlled system call
+The defect: the mask dropped from `Rights::from_bits`, `Rights::from_word(bits)` instead of
+`Rights::from_word(bits & Rights::ALL.bits())`. `from_bits` takes an attacker-controlled system call
 register, so this is the exact shape of a real hole: userspace hands the kernel a u32 and
 the kernel believes all 32 bits of it.
 
 Expected to fail: `assert!(Rights::from_bits(raw).is_subset_of(Rights::ALL))`, on any
-`raw` with a bit above bit 3 set.
+`raw` with a bit from 5 to 30 set (bit 31 is the marker).
 
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -85,7 +85,7 @@
+@@ -103,7 +103,7 @@
      /// [`bits`](Self::bits), for rights that crossed a boundary in a system call register. Undefined
      /// bits are dropped, so a caller cannot conjure a right that does not exist.
      pub const fn from_bits(bits: u32) -> Rights {
--        Rights(bits & Rights::ALL.0)
-+        Rights(bits)
+-        Rights::from_word(bits & Rights::ALL.bits())
++        Rights::from_word(bits)
      }
  
      /// Every right either side holds.
