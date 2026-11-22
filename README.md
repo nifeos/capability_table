@@ -59,8 +59,9 @@ assert!(!read_only.intersect(Rights::ALL).allows(Rights::WRITE));
 ## What is proven
 
 Twelve [Kani](https://github.com/model-checking/kani) harnesses, in `mod verification` at the end of
-`src/lib.rs`. The rights proofs hold for every one of the 2^32 rights words; the table proofs hold
-for every state of a three-slot table and every slot index.
+`src/lib.rs`. The rights proofs hold for every one of the 2^31 words a `Rights` can hold (its top
+bit is a marker, not a right); the table proofs hold for every state of a three-slot table and every
+slot index.
 
 - `subset_is_reflexive`: every set of rights is a subset of itself.
 - `subset_is_transitive`: if B is within A and C within B, C is within A, so a chain of
@@ -145,7 +146,6 @@ the assertion that the patch breaks. `git checkout -- src` reverts the patch.
 - `highest_seen` is one value for the whole program, across every table of every size, which suits
   a kernel and surprises a library. It is behind the `peak` feature, off by default, and exists only
   on targets with 32-bit atomics.
-- `Option<Capability<O>>` has no niche, so each slot is larger than its capability.
 - `insert_at` refuses an occupied slot and returns the slot; `put` overwrites and returns `()`. The
   two names read close for operations that differ in what they do to a live capability.
 - No enum is `#[non_exhaustive]`, so a variant added to `Error` after the first release breaks a

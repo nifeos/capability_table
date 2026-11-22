@@ -1,7 +1,7 @@
 Falsifies `capability_table::subset_is_reflexive`.
 
-The defect: the negation dropped from `is_subset_of`, `self.0 & other.0` instead of
-`self.0 & !other.0`. A missing `!` is an ordinary typo and the compiler cannot see it,
+The defect: the negation dropped from `is_subset_of`, `self.bits() & other.bits()` instead of
+`self.bits() & !other.bits()`. A missing `!` is an ordinary typo and the compiler cannot see it,
 since both spellings are `u32 & u32 == 0`.
 
 Expected to fail: `assert!(a.is_subset_of(a))`, for any `a` with a bit set.
@@ -18,12 +18,12 @@ proposes deleting it; the record is what lets somebody argue about that with evi
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -106,7 +106,7 @@
+@@ -124,7 +124,7 @@
  
      /// Is `self` no more than `other`? The subset test that [`CapabilityTable::derive`] turns on.
      pub const fn is_subset_of(self, other: Rights) -> bool {
--        self.0 & !other.0 == 0
-+        self.0 & other.0 == 0
+-        self.bits() & !other.bits() == 0
++        self.bits() & other.bits() == 0
      }
  }
  

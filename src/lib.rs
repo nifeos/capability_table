@@ -35,36 +35,45 @@
 
 #![no_std]
 
+use core::num::NonZeroU32;
+
 /// What you may do with a capability.
 ///
 /// Rights only narrow: [`CapabilityTable::derive`] cannot widen them, because the type offers no
 /// operation that would.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rights(u32);
+///
+/// The word keeps its top bit set as a presence marker, so it is never zero. `Option<Rights>` and
+/// `Option<Capability<O>>` use the zero word for `None`, and an empty slot costs no space beyond the
+/// capability, whatever the object type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Rights(NonZeroU32);
+
+/// The bit [`Rights`] keeps set in its word, which is no right. [`Rights::bits`] clears it.
+const PRESENT: u32 = 1 << 31;
 
 impl Rights {
     /// No rights at all.
-    pub const NONE: Rights = Rights(0);
+    pub const NONE: Rights = Rights::from_word(0);
     /// The right to read the object's contents.
-    pub const READ: Rights = Rights(1 << 0);
+    pub const READ: Rights = Rights::from_word(1 << 0);
     /// The right to modify the object's contents.
-    pub const WRITE: Rights = Rights(1 << 1);
+    pub const WRITE: Rights = Rights::from_word(1 << 1);
 
     /// The right to **pass this capability on**. Without it, you may use a thing and not lend it,
     /// which makes delegation a decision rather than an accident.
-    pub const GRANT: Rights = Rights(1 << 2);
+    pub const GRANT: Rights = Rights::from_word(1 << 2);
 
     /// The right to **learn what exists**, as distinct from acting on it: the table's twin of a
     /// directory's `ENUMERATE`.
     ///
     /// A domain names its members and never acts on them, so a survey takes this rather than the
     /// `READ` that a receive and a reap take. An owner decides which objects consult it.
-    pub const ENUMERATE: Rights = Rights(1 << 3);
+    pub const ENUMERATE: Rights = Rights::from_word(1 << 3);
 
     /// **The right to add a thread to a process.** Held on a process capability, it lets a thread
     /// under construction join that process without consuming the capability. An owner decides
     /// which objects consult it.
-    pub const BIND: Rights = Rights(1 << 4);
+    pub const BIND: Rights = Rights::from_word(1 << 4);
 
     /// **Every defined bit.** [`from_bits`](Self::from_bits) masks against this, so a right that is
     /// missing here is silently dropped at every delegation: adding a constant above without
@@ -78,35 +87,51 @@ impl Rights {
     /// The raw bit pattern, for carrying rights across a boundary as an integer (a system call
     /// register). [`from_bits`](Self::from_bits) is the inverse.
     pub const fn bits(self) -> u32 {
-        self.0
+        self.0.get() & !PRESENT
+    }
+
+    /// Rights from a word as it stands, every bit but the marker kept: the one constructor, which
+    /// sets the marker. [`from_bits`](Self::from_bits) is the public door, and it masks first.
+    const fn from_word(bits: u32) -> Rights {
+        match NonZeroU32::new(bits | PRESENT) {
+            Some(word) => Rights(word),
+            None => unreachable!(),
+        }
     }
 
     /// Rebuild rights from a raw bit pattern, keeping only defined bits: the inverse of
     /// [`bits`](Self::bits), for rights that crossed a boundary in a system call register. Undefined
     /// bits are dropped, so a caller cannot conjure a right that does not exist.
     pub const fn from_bits(bits: u32) -> Rights {
-        Rights(bits & Rights::ALL.0)
+        Rights::from_word(bits & Rights::ALL.bits())
     }
 
     /// Every right either side holds.
     pub const fn union(self, other: Rights) -> Rights {
-        Rights(self.0 | other.0)
+        Rights::from_word(self.bits() | other.bits())
     }
 
     /// Only the rights both sides hold. The one operation on the delegation path: it can only
     /// narrow, never widen, which is the monotonicity the whole model rests on.
     pub const fn intersect(self, other: Rights) -> Rights {
-        Rights(self.0 & other.0)
+        Rights::from_word(self.bits() & other.bits())
     }
 
     /// Do I hold *at least* these rights?
     pub const fn allows(self, needed: Rights) -> bool {
-        self.0 & needed.0 == needed.0
+        self.bits() & needed.bits() == needed.bits()
     }
 
     /// Is `self` no more than `other`? The subset test that [`CapabilityTable::derive`] turns on.
     pub const fn is_subset_of(self, other: Rights) -> bool {
-        self.0 & !other.0 == 0
+        self.bits() & !other.bits() == 0
+    }
+}
+
+impl core::fmt::Debug for Rights {
+    /// The rights bits, without the marker: `Rights(5)` is `READ` and `GRANT`.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_tuple("Rights").field(&self.bits()).finish()
     }
 }
 
@@ -510,7 +535,7 @@ pub fn highest_seen() -> (usize, usize) {
 /// Machine-checked proofs of the capability model.
 ///
 /// Each harness proves its property for every input, symbolically: `derive_never_widens_rights`
-/// covers all 2^32 source and requested rights at once. Behind `#[cfg(kani)]`, so only `cargo
+/// covers all 2^31 source and requested rights words (every bit but the marker) at once. Behind `#[cfg(kani)]`, so only `cargo
 /// kani` builds it.
 #[cfg(kani)]
 mod verification {
@@ -520,7 +545,7 @@ mod verification {
     /// Every capability is a subset of itself: the reflexive base case of the derivation order.
     #[kani::proof]
     fn subset_is_reflexive() {
-        let a = Rights(kani::any());
+        let a = Rights::from_word(kani::any());
         assert!(a.is_subset_of(a));
     }
 
@@ -531,9 +556,9 @@ mod verification {
     #[kani::proof]
     fn subset_is_transitive() {
         let (a, b, c) = (
-            Rights(kani::any()),
-            Rights(kani::any()),
-            Rights(kani::any()),
+            Rights::from_word(kani::any()),
+            Rights::from_word(kani::any()),
+            Rights::from_word(kani::any()),
         );
         kani::assume(a.is_subset_of(b));
         kani::assume(b.is_subset_of(c));
@@ -554,7 +579,10 @@ mod verification {
     /// least a". Proving them equivalent means a bug in one would show up against the other.
     #[kani::proof]
     fn subset_matches_allows() {
-        let (a, b) = (Rights(kani::any()), Rights(kani::any()));
+        let (a, b) = (
+            Rights::from_word(kani::any()),
+            Rights::from_word(kani::any()),
+        );
         assert_eq!(a.is_subset_of(b), b.allows(a));
     }
 
@@ -569,7 +597,7 @@ mod verification {
                     slot,
                     Capability {
                         object: kani::any(),
-                        rights: Rights(kani::any()),
+                        rights: Rights::from_word(kani::any()),
                     },
                 )
                 .unwrap();
@@ -602,7 +630,7 @@ mod verification {
             kani::any(),
             Capability {
                 object: kani::any(),
-                rights: Rights(kani::any()),
+                rights: Rights::from_word(kani::any()),
             },
         );
         assert_eq!(
@@ -614,7 +642,7 @@ mod verification {
             kani::any(),
             Capability {
                 object: kani::any(),
-                rights: Rights(kani::any()),
+                rights: Rights::from_word(kani::any()),
             },
         );
         assert_eq!(
@@ -658,7 +686,7 @@ mod verification {
         }
         let capability = || Capability {
             object: kani::any(),
-            rights: Rights(kani::any()),
+            rights: Rights::from_word(kani::any()),
         };
         let mut cs = any_small_capability_table();
         assert_eq!(cs.free_mask(), empties(&cs), "wrong after put");
@@ -682,7 +710,7 @@ mod verification {
         let _ = cs.insert_at(kani::any(), capability());
         assert_eq!(cs.free_mask(), empties(&cs), "wrong after insert_at");
 
-        let _ = cs.derive(kani::any(), kani::any(), Rights(kani::any()));
+        let _ = cs.derive(kani::any(), kani::any(), Rights::from_word(kani::any()));
         assert_eq!(cs.free_mask(), empties(&cs), "wrong after derive");
 
         let wanted: u8 = kani::any();
@@ -701,7 +729,7 @@ mod verification {
     fn the_peak_never_falls_and_a_floor_insert_stays_above_its_floor() {
         let capability = Capability {
             object: kani::any(),
-            rights: Rights(kani::any()),
+            rights: Rights::from_word(kani::any()),
         };
         let mut cs = any_small_capability_table();
         let before = cs.peak();
@@ -768,8 +796,8 @@ mod verification {
     /// widens authority.
     #[kani::proof]
     fn derive_never_widens_rights() {
-        let source_rights = Rights(kani::any());
-        let requested = Rights(kani::any());
+        let source_rights = Rights::from_word(kani::any());
+        let requested = Rights::from_word(kani::any());
 
         let mut cs: CapabilityTable<u8, 2> = CapabilityTable::new();
         cs.put(
@@ -788,24 +816,24 @@ mod verification {
             // In raw bits, not through `is_subset_of`: `derive` guards on that predicate, so a
             // claim phrased through it would hold for any consistently wrong `is_subset_of`.
             assert_eq!(
-                derived.rights.0 & !source_rights.0,
+                derived.rights.0.get() & !source_rights.0.get(),
                 0,
                 "a derived capability holds a right the source did not",
             );
             assert_eq!(
-                requested.0 & !source_rights.0,
+                requested.0.get() & !source_rights.0.get(),
                 0,
                 "a request wider than the source got past the guard",
             );
             // And it holds exactly what was asked: no silent grant of more, no silent clamp to
             // less. Field equality, so no predicate stands between the claim and the bits.
-            assert_eq!(derived.rights.0, requested.0);
+            assert_eq!(derived.rights.0.get(), requested.0.get());
             assert_eq!(derived.object, 0u8);
         }
     }
 
     /// Falsification: replayable `falsifications/verification.delegation_needs_grant_and_never_widens.patch`
-    /// **Delegation needs `GRANT`, and never widens.** For every one of the 2^32 source rights and
+    /// **Delegation needs `GRANT`, and never widens.** For every one of the 2^31 source rights words and
     /// every request, `delegate` succeeds only when the source held the `GRANT` bit and the copy's
     /// bits sit inside the source's, and the copy holds exactly what was asked. The other way too:
     /// a source with `GRANT` and a request inside it is never refused. Stated in raw bits, as
@@ -816,25 +844,25 @@ mod verification {
         const GRANT_BIT: u32 = 1 << 2;
         let source = Capability {
             object: 5u8,
-            rights: Rights(kani::any()),
+            rights: Rights::from_word(kani::any()),
         };
-        let requested = Rights(kani::any());
+        let requested = Rights::from_word(kani::any());
 
         match source.delegate(requested) {
             Ok(copy) => {
                 assert_ne!(
-                    source.rights.0 & GRANT_BIT,
+                    source.rights.0.get() & GRANT_BIT,
                     0,
                     "a capability without GRANT was passed on"
                 );
-                assert_eq!(copy.rights.0 & !source.rights.0, 0);
-                assert_eq!(copy.rights.0, requested.0);
+                assert_eq!(copy.rights.0.get() & !source.rights.0.get(), 0);
+                assert_eq!(copy.rights.0.get(), requested.0.get());
                 assert_eq!(copy.object, 5u8);
             }
-            Err(Error::GrantRequired) => assert_eq!(source.rights.0 & GRANT_BIT, 0),
+            Err(Error::GrantRequired) => assert_eq!(source.rights.0.get() & GRANT_BIT, 0),
             Err(Error::CannotWiden) => {
-                assert_ne!(source.rights.0 & GRANT_BIT, 0);
-                assert_ne!(requested.0 & !source.rights.0, 0);
+                assert_ne!(source.rights.0.get() & GRANT_BIT, 0);
+                assert_ne!(requested.0.get() & !source.rights.0.get(), 0);
             }
             Err(_) => panic!("delegate gave an answer it has no reason for"),
         }
@@ -851,13 +879,13 @@ mod verification {
     fn split_never_widens_rights() {
         let parent = Capability {
             object: 7u8,
-            rights: Rights(kani::any()),
+            rights: Rights::from_word(kani::any()),
         };
         let child_object: u8 = kani::any();
 
         let child = parent.mint_child(child_object);
 
-        // Exactly the parent's, for every one of the 2^32 rights patterns: inheritance, not a grant.
+        // Exactly the parent's, for every one of the 2^31 rights words: inheritance, not a grant.
         assert_eq!(
             child.rights, parent.rights,
             "an inheriting mint changed the child's rights",

@@ -4,7 +4,7 @@ The defect: the `GRANT` check dropped from `Capability::delegate`, so a capabili
 holder was never trusted to lend it is lent anyway, narrowed or not. This is the rule the
 crate's own documentation gives `GRANT` and the kernel's delegation applies.
 
-Expected to fail: `assert_ne!(source.rights.0 & GRANT_BIT, 0)` in the `Ok` arm, on a source
+Expected to fail: `assert_ne!(source.rights.0.get() & GRANT_BIT, 0)` in the `Ok` arm, on a source
 without the `GRANT` bit and a request inside it.
 
 diff --git a/src/lib.rs b/src/lib.rs
