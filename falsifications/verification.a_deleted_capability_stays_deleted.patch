@@ -16,7 +16,7 @@ are not reached, because the first panics.
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -546,7 +546,7 @@
+@@ -541,7 +541,7 @@
      /// Drop a capability. The object may still exist; **we simply can no longer name it.**
      pub fn delete(&mut self, slot: u64) -> Result<(), Error> {
          let slot = usize::try_from(slot).map_err(|_| Error::NoSuchSlot)?;

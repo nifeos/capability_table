@@ -321,12 +321,15 @@ mod storage {
             if size > N {
                 return None;
             }
-            let mut free = [0u64; FREE_WORDS];
-            let mut word = 0;
-            while word < FREE_WORDS {
-                free[word] = all_free_word(size, word);
-                word += 1;
-            }
+            // One entry per word, written out: a `const fn` has no `for`, and a hand-advanced
+            // counter is a loop nothing bounds. The array's type is `[u64; FREE_WORDS]`, so a
+            // bound that changes the word count fails to compile here until the list follows.
+            let free = [
+                all_free_word(size, 0),
+                all_free_word(size, 1),
+                all_free_word(size, 2),
+                all_free_word(size, 3),
+            ];
             Some(CapabilityTable {
                 slots: [const { None }; N],
                 free,
@@ -357,22 +360,16 @@ mod storage {
 
         /// The lowest empty slot at or above `floor`, or `None` when there is none.
         pub(super) fn first_free_from(&self, floor: usize) -> Option<usize> {
-            let mut word = floor / WORD_BITS;
-            if word >= Self::WORDS {
-                return None;
-            }
-            // The first word drops the slots below the floor; the words after it count whole.
-            let mut bits = self.free[word] & (u64::MAX << (floor % WORD_BITS));
-            loop {
-                if bits != 0 {
-                    return Some(word * WORD_BITS + bits.trailing_zeros() as usize);
-                }
-                word += 1;
-                if word >= Self::WORDS {
-                    return None;
-                }
-                bits = self.free[word];
-            }
+            let first = floor / WORD_BITS;
+            (first..Self::WORDS).find_map(|word| {
+                // The first word drops the slots below the floor; the words after it count whole.
+                let bits = if word == first {
+                    self.free[word] & (u64::MAX << (floor % WORD_BITS))
+                } else {
+                    self.free[word]
+                };
+                (bits != 0).then(|| word * WORD_BITS + bits.trailing_zeros() as usize)
+            })
         }
 
         /// The free-slot set itself, for the proofs and the tests that check it against the array.
@@ -451,15 +448,13 @@ impl<O: Copy, const N: usize> Default for CapabilityTable<O, N> {
     }
 }
 
-/// The set bits of `word`, lowest first, each once.
+/// The set bits of `word`, lowest first, each once. The walk takes exactly as many steps as the
+/// word has set bits, counted before it starts, so it ends whatever the body does to the word.
 fn set_bits(mut word: u64) -> impl Iterator<Item = usize> {
-    core::iter::from_fn(move || {
-        if word == 0 {
-            return None;
-        }
+    (0..word.count_ones()).map(move |_| {
         let bit = word.trailing_zeros() as usize;
         word &= word - 1; // clear the lowest set bit; each slot visited once
-        Some(bit)
+        bit
     })
 }
 

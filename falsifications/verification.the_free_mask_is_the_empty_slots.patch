@@ -17,7 +17,7 @@ assertion before it passes, because `put` goes through `fill`, which is untouche
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -426,7 +426,6 @@
+@@ -423,7 +423,6 @@
          /// what a boot holds, not what it reached.
          pub(super) fn empty(&mut self, slot: usize) -> Option<Capability<O>> {
              let capability = self.slots.get_mut(slot)?.take()?;
