@@ -1,9 +1,9 @@
 # capability_table
 
-[![check](https://github.com/nifeos/capability_table/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nifeos/capability_table/actions/workflows/ci.yml?query=branch%3Amain)
-[![proofs](https://github.com/nifeos/capability_table/actions/workflows/proofs.yml/badge.svg?branch=main)](https://github.com/nifeos/capability_table/actions/workflows/proofs.yml?query=branch%3Amain)
-[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/nifeos/capability_table#license)
-[![minimum Rust version](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](https://github.com/nifeos/capability_table/blob/main/Cargo.toml)
+[![check](https://github.com/partsfoundry/capability_table/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/partsfoundry/capability_table/actions/workflows/ci.yml?query=branch%3Amain)
+[![proofs](https://github.com/partsfoundry/capability_table/actions/workflows/proofs.yml/badge.svg?branch=main)](https://github.com/partsfoundry/capability_table/actions/workflows/proofs.yml?query=branch%3Amain)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/partsfoundry/capability_table#license)
+[![minimum Rust version](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](https://github.com/partsfoundry/capability_table/blob/main/Cargo.toml)
 
 A capability table for a kernel: a file descriptor table that can point at anything, where each
 entry carries the rights its holder has over the object. The table lives in the kernel's memory and
