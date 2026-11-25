@@ -23,7 +23,7 @@ blind spot.
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -124,7 +124,7 @@
+@@ -130,7 +130,7 @@
  
      /// Is `self` no more than `other`? The subset test that [`CapabilityTable::derive`] turns on.
      pub const fn is_subset_of(self, other: Rights) -> bool {

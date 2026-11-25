@@ -17,7 +17,7 @@ the equality panics first.
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -149,7 +149,7 @@
+@@ -180,7 +180,7 @@
      pub fn mint_child(&self, object: O) -> Capability<O> {
          Capability {
              object,

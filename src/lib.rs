@@ -75,6 +75,11 @@ impl Rights {
     /// which objects consult it.
     pub const BIND: Rights = Rights::from_word(1 << 4);
 
+    /// **The right to revoke: to withdraw what was passed on from this capability.** Distinct from
+    /// [`GRANT`](Self::GRANT), so a holder may lend a thing without the power to take back what
+    /// others lent from it, or the other way round. An owner decides which objects consult it.
+    pub const REVOKE: Rights = Rights::from_word(1 << 5);
+
     /// **Every defined bit.** [`from_bits`](Self::from_bits) masks against this, so a right that is
     /// missing here is silently dropped at every delegation: adding a constant above without
     /// widening this mask produces a right that cannot survive being passed on.
@@ -82,7 +87,8 @@ impl Rights {
         .union(Rights::WRITE)
         .union(Rights::GRANT)
         .union(Rights::ENUMERATE)
-        .union(Rights::BIND);
+        .union(Rights::BIND)
+        .union(Rights::REVOKE);
 
     /// The raw bit pattern, for carrying rights across a boundary as an integer (a system call
     /// register). [`from_bits`](Self::from_bits) is the inverse.
@@ -210,35 +216,58 @@ impl core::fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
-/// **The most slots a [`CapabilityTable`] may have: one per bit of its free-slot word.**
+/// **The most slots a [`CapabilityTable`] may have**, whatever its storage.
 ///
-/// The word is a `u64`, so [`CapabilityTable::new`] asserts `N <= 64` at compile time, and an owner
-/// that fixes its own table size asserts it again beside that constant. Growing past 64 is a wider
-/// word or a second one.
-pub const MAXIMUM_SLOTS: usize = u64::BITS as usize;
+/// 256, set from the most slots one table has been measured to hold, 39, with generous headroom:
+/// six and a half times that peak and four times the 64 slots a table was limited to before. The
+/// free-slot set is four 64-bit words at this bound, 32 bytes in every table, and a search for a
+/// free slot reads at most those four. A 256-slot table of 32-byte capabilities is 8 KiB.
+///
+/// It may only grow. A table that was legal stays legal when it grows, and a lower bound would
+/// refuse a table some owner already builds. Growing it widens the free-slot set of every table by
+/// one word per 64 slots.
+pub const MAXIMUM_SLOTS: usize = 256;
+
+/// The words of the free-slot set: one bit per slot, up to [`MAXIMUM_SLOTS`].
+const FREE_WORDS: usize = MAXIMUM_SLOTS / WORD_BITS;
+
+/// The slots one free-slot word covers.
+const WORD_BITS: usize = u64::BITS as usize;
+
+// The bound fills its words exactly, and the counts that hold a slot number fit their `u16`.
+const _: () = assert!(MAXIMUM_SLOTS % WORD_BITS == 0);
+const _: () = assert!(MAXIMUM_SLOTS <= u16::MAX as usize);
 
 pub use storage::CapabilityTable;
 
 /// **The only code that can touch a slot**, and that is the mechanism rather than a convention.
 ///
-/// The free-slot word, the occupancy count and the high-water mark are private to this module,
-/// which changes a slot only through [`fill`](CapabilityTable::fill) and
+/// The free-slot set, the size, the occupancy count and the high-water mark are private to this
+/// module, which changes a slot only through [`fill`](CapabilityTable::fill) and
 /// [`empty`](CapabilityTable::empty). Every other mutator is written in terms of those two, so it
 /// cannot forget the bookkeeping. The harnesses `the_free_mask_is_the_empty_slots` and
 /// `the_count_is_the_slots` check the two doors against the array.
 mod storage {
     #[cfg(all(target_has_atomic = "32", feature = "peak"))]
     use super::note_peak;
-    use super::{Capability, MAXIMUM_SLOTS};
+    use super::{Capability, FREE_WORDS, MAXIMUM_SLOTS, WORD_BITS};
 
     /// A thread's capability table: a flat array, an fd table with a type tag on each entry,
     /// rather than seL4's tree of `CNode` objects.
+    ///
+    /// `N` is the storage, the most slots this type can hold. The table's size is chosen when it is
+    /// made, at most `N`, and never changes: [`new`](Self::new) takes all `N`, and
+    /// [`with_size`](Self::with_size) fewer. A slot at or above the size is always empty, so a
+    /// lookup needs no check beyond the array's own.
     pub struct CapabilityTable<O, const N: usize> {
         slots: [Option<Capability<O>>; N],
-        /// **Bit `i` set means slot `i` is empty**, so `insert`'s first free slot is one
-        /// `trailing_zeros`, and bits at and above `N` stay clear, so a full table is a zero word.
-        /// A `u64`; the table is `N` slots, this word and two `u16` counts, rounded to eight bytes.
-        free: u64,
+        /// **Bit `i % 64` of word `i / 64` set means slot `i` is empty**, so `insert`'s first free
+        /// slot is one `trailing_zeros` in the first word that is not zero. Bits at and above the
+        /// size stay clear, so a full table is all zero words.
+        free: [u64; FREE_WORDS],
+        /// How many slots the table has: every slot below it may be filled, and none at or above.
+        /// Set when the table is made, and never changed after.
+        size_slots: u16,
         /// How many of the slots are occupied right now. Maintained by the two doors rather than
         /// counted on demand, because the thing that wants it is a high-water mark and a mark
         /// sampled at a convenient moment is not one.
@@ -250,94 +279,139 @@ mod storage {
         peak: u16,
     }
 
+    /// The free-slot word `word` of a table of `size` slots with every slot empty: the bits of
+    /// the slots from `word * 64` up to `size`.
+    pub(super) const fn all_free_word(size: usize, word: usize) -> u64 {
+        let low = word * WORD_BITS;
+        if size <= low {
+            0
+        } else if size - low >= WORD_BITS {
+            u64::MAX
+        } else {
+            (1u64 << (size - low)) - 1
+        }
+    }
+
     impl<O: Copy, const N: usize> CapabilityTable<O, N> {
-        /// Every slot free: the low `N` bits. The assertion is the compile-time wall
-        /// [`MAXIMUM_SLOTS`] describes, evaluated for each `N` that is instantiated.
-        const ALL_FREE: u64 = {
-            assert!(
-                N <= MAXIMUM_SLOTS,
-                "a capability table has one free-slot bit per slot, and the word is a u64"
-            );
-            if N == MAXIMUM_SLOTS {
-                u64::MAX
-            } else {
-                (1u64 << N) - 1
-            }
-        };
+        /// The free-slot words a table of this storage reads: enough for `N` slots, which
+        /// [`with_size`](Self::with_size) bounds by [`MAXIMUM_SLOTS`].
+        pub(super) const WORDS: usize = N.div_ceil(WORD_BITS);
 
         /// **A brand-new process holds nothing**: it can name nothing until somebody hands it
-        /// something.
+        /// something. The table has all `N` slots.
         pub const fn new() -> Self {
-            CapabilityTable {
-                slots: [const { None }; N],
-                free: Self::ALL_FREE,
-                used: 0,
-                peak: 0,
+            match Self::with_size(N) {
+                Some(table) => table,
+                None => unreachable!(),
             }
         }
 
-        /// The capability in `slot`, or `None` for an empty or out-of-range one.
+        /// **An empty table of `size` slots**, or `None` when `size` is more than the storage
+        /// holds. The size never changes after: a slot a holder was told it may fill stays one it
+        /// may fill.
+        pub const fn with_size(size: usize) -> Option<Self> {
+            // The compile-time wall `MAXIMUM_SLOTS` describes, evaluated for each `N` that is
+            // instantiated: the one constructor refuses storage the free-slot set cannot cover.
+            const {
+                assert!(
+                    N <= MAXIMUM_SLOTS,
+                    "a capability table has at most MAXIMUM_SLOTS slots"
+                );
+            }
+            if size > N {
+                return None;
+            }
+            // One entry per word, written out: a `const fn` has no `for`, and a hand-advanced
+            // counter is a loop nothing bounds. The array's type is `[u64; FREE_WORDS]`, so a
+            // bound that changes the word count fails to compile here until the list follows.
+            let free = [
+                all_free_word(size, 0),
+                all_free_word(size, 1),
+                all_free_word(size, 2),
+                all_free_word(size, 3),
+            ];
+            Some(CapabilityTable {
+                slots: [const { None }; N],
+                free,
+                // At most `N`, which the assertion bounds by `MAXIMUM_SLOTS`, which fits a `u16`.
+                size_slots: size as u16,
+                used: 0,
+                peak: 0,
+            })
+        }
+
+        /// How many slots the table has, set when it was made.
+        pub const fn size(&self) -> usize {
+            self.size_slots as usize
+        }
+
+        /// The capability in `slot`, or `None` for an empty or out-of-range one. A slot at or above
+        /// the size is empty, which [`fill`](Self::fill) keeps true, so the array's bound is the
+        /// only check.
         pub(super) fn slot(&self, slot: usize) -> Option<Capability<O>> {
             self.slots.get(slot).copied().flatten()
         }
 
         /// The lowest-numbered empty slot, or `None` when the table is full. One count of trailing
-        /// zeros, whatever `N` is.
+        /// zeros in the first free-slot word that is not zero.
         pub(super) fn first_free(&self) -> Option<usize> {
-            if self.free == 0 {
-                None
-            } else {
-                Some(self.free.trailing_zeros() as usize)
-            }
+            self.first_free_from(0)
         }
 
         /// The lowest empty slot at or above `floor`, or `None` when there is none.
         pub(super) fn first_free_from(&self, floor: usize) -> Option<usize> {
-            let above = if floor >= 64 {
-                0
-            } else {
-                self.free & (u64::MAX << floor)
-            };
-            (above != 0).then(|| above.trailing_zeros() as usize)
+            let first = floor / WORD_BITS;
+            (first..Self::WORDS).find_map(|word| {
+                // The first word drops the slots below the floor; the words after it count whole.
+                let bits = if word == first {
+                    self.free[word] & (u64::MAX << (floor % WORD_BITS))
+                } else {
+                    self.free[word]
+                };
+                (bits != 0).then(|| word * WORD_BITS + bits.trailing_zeros() as usize)
+            })
         }
 
-        /// The free-slot word itself, for the proofs and the tests that check it against the array.
+        /// The free-slot set itself, for the proofs and the tests that check it against the array.
         #[cfg_attr(not(any(test, kani)), allow(dead_code))]
-        pub(super) fn free_mask(&self) -> u64 {
+        pub(super) fn free_mask(&self) -> [u64; FREE_WORDS] {
             self.free
         }
 
-        /// The occupied slots, as a mask: `free`'s complement, restricted to the `N` bits that
-        /// exist (inverting `free` alone would set the bits above `N`).
-        /// [`delete_matching`](super::CapabilityTable::delete_matching) walks this so a sweep
+        /// The occupied slots of word `word`, as a mask: `free`'s complement, restricted to the
+        /// slots below the size (inverting `free` alone would set the bits above it).
+        /// [`delete_matching`](super::CapabilityTable::delete_matching) walks these so a sweep
         /// costs a table's occupancy, not its capacity.
-        pub(super) fn occupied_mask(&self) -> u64 {
-            !self.free & Self::ALL_FREE
+        pub(super) fn occupied_word(&self, word: usize) -> u64 {
+            !self.free[word] & all_free_word(self.size_slots as usize, word)
         }
 
-        /// Whether every slot is empty: one compare, because the word already knows.
+        /// Whether every slot is empty: one compare, because the count already knows.
         pub(super) fn all_free(&self) -> bool {
-            self.free == Self::ALL_FREE
+            self.used == 0
         }
 
-        /// **Door one: put `capability` in `slot`**, occupied or not. `None` if `slot` is out of range;
-        /// otherwise whether it was empty before. Clears the slot's free bit, and if the slot was
-        /// empty, counts the growth and raises the high-water mark.
+        /// **Door one: put `capability` in `slot`**, occupied or not. `None` if `slot` is at or above
+        /// the size; otherwise whether it was empty before. Clears the slot's free bit, and if the
+        /// slot was empty, counts the growth and raises the high-water mark.
         pub(super) fn fill(&mut self, slot: usize, capability: Capability<O>) -> Option<bool> {
+            if slot >= self.size_slots as usize {
+                return None;
+            }
             let s = self.slots.get_mut(slot)?;
             let was_empty = s.is_none();
             *s = Some(capability);
-            self.free &= !(1u64 << slot);
+            self.free[slot / WORD_BITS] &= !(1u64 << (slot % WORD_BITS));
             if was_empty {
                 // Wrapping, because the wrap cannot happen and this is on every reply-capability
                 // mint (release builds check overflow). `used` counts
                 // occupied slots (`the_count_is_the_slots` proves it), this slot was empty, so the
-                // result is at most `N`, which the `u64` free mask bounds at 64.
+                // result is at most the size, which `MAXIMUM_SLOTS` bounds below `u16::MAX`.
                 self.used = self.used.wrapping_add(1);
                 if self.used > self.peak {
                     self.peak = self.used;
                     #[cfg(all(target_has_atomic = "32", feature = "peak"))]
-                    note_peak(self.peak, N);
+                    note_peak(self.peak, self.size_slots as usize);
                 }
             }
             Some(was_empty)
@@ -349,7 +423,7 @@ mod storage {
         /// what a boot holds, not what it reached.
         pub(super) fn empty(&mut self, slot: usize) -> Option<Capability<O>> {
             let capability = self.slots.get_mut(slot)?.take()?;
-            self.free |= 1u64 << slot;
+            self.free[slot / WORD_BITS] |= 1u64 << (slot % WORD_BITS);
             self.used -= 1;
             Some(capability)
         }
@@ -374,11 +448,21 @@ impl<O: Copy, const N: usize> Default for CapabilityTable<O, N> {
     }
 }
 
+/// The set bits of `word`, lowest first, each once. The walk takes exactly as many steps as the
+/// word has set bits, counted before it starts, so it ends whatever the body does to the word.
+fn set_bits(mut word: u64) -> impl Iterator<Item = usize> {
+    (0..word.count_ones()).map(move |_| {
+        let bit = word.trailing_zeros() as usize;
+        word &= word - 1; // clear the lowest set bit; each slot visited once
+        bit
+    })
+}
+
 impl<O: Copy, const N: usize> CapabilityTable<O, N> {
-    /// The table's fixed capacity, `N`: how many slots it has, occupied or not. Never changes; a
-    /// capability table's size is part of its type. [`used`](Self::used) counts the occupied ones.
+    /// How many slots the table has, occupied or not: its [`size`](Self::size), chosen when it was
+    /// made and never changed. [`used`](Self::used) counts the occupied ones.
     pub const fn capacity(&self) -> usize {
-        N
+        self.size()
     }
 
     /// Whether every slot is currently empty.
@@ -395,8 +479,8 @@ impl<O: Copy, const N: usize> CapabilityTable<O, N> {
     }
 
     /// Put a capability in the first free slot. Used at spawn, to hand a process its world, and
-    /// on every `CALL` for the one-shot Reply, which is why it is one `trailing_zeros` and not a
-    /// scan (see the free-slot word's own doc).
+    /// on every `CALL` for the one-shot Reply, which is why it is one `trailing_zeros` per word
+    /// and not a scan of the slots (see the free-slot set's own doc).
     pub fn insert(&mut self, capability: Capability<O>) -> Result<u64, Error> {
         let slot = self.first_free().ok_or(Error::NoFreeSlot)?;
         self.fill(slot, capability);
@@ -424,7 +508,7 @@ impl<O: Copy, const N: usize> CapabilityTable<O, N> {
     /// and refusing an occupied slot keeps that reservation honest: two things must never share the
     /// slot the owner reads when the child starts.
     pub fn insert_at(&mut self, slot: u64, capability: Capability<O>) -> Result<u64, Error> {
-        if slot >= N as u64 {
+        if slot >= self.size() as u64 {
             return Err(Error::NoSuchSlot);
         }
         if self.slot(slot as usize).is_some() {
@@ -462,33 +546,28 @@ impl<O: Copy, const N: usize> CapabilityTable<O, N> {
     }
 
     /// **The occupied slots, lowest first, as `(slot, capability)`**: a read-only walk that costs a
-    /// table's occupancy and not its capacity, because it follows the occupied mask as
+    /// table's occupancy and not its capacity, because it follows the occupied masks as
     /// [`delete_matching`](Self::delete_matching) does.
     pub fn iter(&self) -> impl Iterator<Item = (u64, Capability<O>)> + '_ {
-        let mut occupied = self.occupied_mask();
-        core::iter::from_fn(move || {
-            while occupied != 0 {
-                let slot = occupied.trailing_zeros() as usize;
-                occupied &= occupied - 1; // clear the lowest set bit; each slot visited once
-                if let Some(capability) = self.slot(slot) {
-                    return Some((slot as u64, capability));
-                }
-            }
-            None
+        (0..Self::WORDS).flat_map(move |word| {
+            set_bits(self.occupied_word(word)).filter_map(move |bit| {
+                let slot = word * u64::BITS as usize + bit;
+                self.slot(slot).map(|capability| (slot as u64, capability))
+            })
         })
     }
 
     /// Delete every occupied slot whose object satisfies `matches`, in place: the revocation
     /// sweeps' primitive, behaviorally a `get`-then-`delete` per slot. It reads each slot once and
-    /// walks the occupied mask, not `0..N`, because a sweep visits every thread's table for every
+    /// walks the occupied masks, not `0..N`, because a sweep visits every thread's table for every
     /// frame a revocation touches and should cost what a table holds, not its capacity.
     pub fn delete_matching(&mut self, mut matches: impl FnMut(&O) -> bool) {
-        let mut occupied = self.occupied_mask();
-        while occupied != 0 {
-            let slot = occupied.trailing_zeros() as usize;
-            occupied &= occupied - 1; // clear the lowest set bit; each slot visited once
-            if matches!(self.slot(slot), Some(c) if matches(&c.object)) {
-                self.empty(slot);
+        for word in 0..Self::WORDS {
+            for bit in set_bits(self.occupied_word(word)) {
+                let slot = word * u64::BITS as usize + bit;
+                if matches!(self.slot(slot), Some(c) if matches(&c.object)) {
+                    self.empty(slot);
+                }
             }
         }
     }
@@ -586,15 +665,35 @@ mod verification {
         assert_eq!(a.is_subset_of(b), b.allows(a));
     }
 
-    /// A small table in an arbitrary state: every slot independently empty or holding a capability
-    /// with symbolic object and rights. Three slots is enough to exhibit "the slot in question, a
-    /// different slot, and an empty one" in every combination.
-    fn any_small_capability_table() -> CapabilityTable<u8, 3> {
-        let mut cs: CapabilityTable<u8, 3> = CapabilityTable::new();
-        for slot in 0..3u64 {
-            if kani::any() {
+    /// The storage of every table a harness builds: 67 slots, so a table may cross from the first
+    /// free-slot word into the second, at slot 64.
+    const PROOF_STORAGE: usize = 67;
+
+    /// The slots whose state is arbitrary in [`any_capability_table`]. Three is enough to exhibit
+    /// "the slot in question, a different slot, and an empty one" in every combination.
+    const WINDOW: usize = 3;
+
+    /// Where [`any_capability_table`]'s window may start: at slot 0, or across the boundary
+    /// between the first two free-slot words (slots 62, 63 and 64).
+    const WINDOW_AT_THE_WORD_BOUNDARY: usize = 62;
+
+    /// A table of `size` slots in an arbitrary state of its window: the window starts at slot 0 or
+    /// at slot 62, every slot in it below `size` is independently empty or holds a capability with
+    /// symbolic object and rights, and every other slot is empty. With the window at 0 and `size`
+    /// at most three, that is every state of every table of up to three slots, the old proofs'
+    /// whole domain; with it at 62, the same freedom where one free-slot word ends and the next
+    /// begins, so a floor at 62 or 63 searches across the boundary. `size` is the caller's, and
+    /// each harness states its bound on it as an assumption.
+    fn any_capability_table(size: usize) -> CapabilityTable<u8, PROOF_STORAGE> {
+        let start: usize = kani::any();
+        kani::assume(start == 0 || start == WINDOW_AT_THE_WORD_BOUNDARY);
+        let mut cs = CapabilityTable::<u8, PROOF_STORAGE>::with_size(size)
+            .expect("each harness assumes a size the storage holds");
+        for offset in 0..WINDOW {
+            let slot = start + offset;
+            if slot < size && kani::any() {
                 cs.put(
-                    slot,
+                    slot as u64,
                     Capability {
                         object: kani::any(),
                         rights: Rights::from_word(kani::any()),
@@ -606,24 +705,71 @@ mod verification {
         cs
     }
 
+    /// An arbitrary bit position of the free-slot set: a slot of the storage, or a bit past it.
+    /// A claim checked at it holds at every position, so the harnesses quantify over slots with
+    /// one symbolic index in place of a walk over the storage, which keeps every loop short.
+    fn any_position() -> usize {
+        let position: usize = kani::any();
+        kani::assume(position < FREE_WORDS * 64);
+        position
+    }
+
+    /// The free-slot set's bit at `position`.
+    fn is_free_bit_set(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
+        cs.free_mask()[position / 64] & (1 << (position % 64)) != 0
+    }
+
+    /// Whether the free-slot set agrees with the array at `position`: its bit is set exactly when
+    /// the slot is below the size and empty, and a slot at or above the size is always empty.
+    fn is_free_set_right_at(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
+        let empty = cs.slot(position).is_none();
+        is_free_bit_set(cs, position) == (position < cs.size() && empty)
+            && (position < cs.size() || empty)
+    }
+
+    /// Whether the count agrees with the array: `used` is the number of occupied bits, and the
+    /// occupied bit at `position` is set exactly when the slot holds a capability. Over every
+    /// `position`, the two together say `used` is the number of occupied slots.
+    fn is_count_right_at(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
+        let occupied_bits: u32 = (0..FREE_WORDS)
+            .map(|word| cs.occupied_word(word).count_ones())
+            .sum();
+        let occupied_bit = cs.occupied_word(position / 64) & (1 << (position % 64)) != 0;
+        cs.used() == occupied_bits as usize && occupied_bit == cs.slot(position).is_some()
+    }
+
     /// Falsification: replayable `falsifications/verification.the_count_is_the_slots.patch`
     /// **The occupancy count is the slots, for every reachable table state.**
     ///
     /// A drifted count reports a high-water mark that was never true. Covers both freeing paths,
-    /// `delete` and `delete_matching`; `any_small_capability_table` builds through `put`.
+    /// `delete` and `delete_matching`; `any_capability_table` builds through `put`.
     ///
-    /// `#[kani::unwind(4)]` is N + 1 for this harness's N = 3: every loop is an exact `0..3` or the
-    /// sweep's bit-scan, which clears one of the N occupied bits per iteration, and the unwinding
-    /// assertion fails if any loop could run a fourth time.
+    /// The bound: every size up to [`PROOF_STORAGE`], 67 slots, assumed below, and every slot
+    /// index, through one symbolic position. `#[kani::unwind(5)]`: the longest loops are over
+    /// the four free-slot words, and the sweep's walk over one word's occupied bits, which clears
+    /// one bit per iteration and sees at most the window's three. The unwinding assertion fails if
+    /// any loop could run once more.
     ///
     #[kani::proof]
-    #[kani::unwind(4)]
+    #[kani::unwind(5)]
     fn the_count_is_the_slots() {
-        fn occupied(cs: &CapabilityTable<u8, 3>) -> usize {
-            (0..3).filter(|&i| cs.slot(i).is_some()).count()
-        }
-        let mut cs = any_small_capability_table();
-        assert_eq!(cs.used(), occupied(&cs), "the count is wrong at the start");
+        let position = any_position();
+        let size: usize = kani::any();
+        kani::assume(size <= PROOF_STORAGE);
+        let mut cs = any_capability_table(size);
+        assert!(
+            is_count_right_at(&cs, position),
+            "the count is wrong at the start"
+        );
+
+        // The sweep, which frees any number of slots in one pass and is the other freeing path.
+        // It runs first, on the window's arbitrary state, so its walk sees at most three bits.
+        let wanted: u8 = kani::any();
+        cs.delete_matching(|o| *o == wanted);
+        assert!(
+            is_count_right_at(&cs, position),
+            "delete_matching left the count behind"
+        );
 
         // The floor insert and a second `put` over a slot that may be occupied.
         let _ = cs.insert_at_or_above(
@@ -633,9 +779,8 @@ mod verification {
                 rights: Rights::from_word(kani::any()),
             },
         );
-        assert_eq!(
-            cs.used(),
-            occupied(&cs),
+        assert!(
+            is_count_right_at(&cs, position),
             "insert_at_or_above left the count behind"
         );
         let _ = cs.put(
@@ -645,23 +790,16 @@ mod verification {
                 rights: Rights::from_word(kani::any()),
             },
         );
-        assert_eq!(
-            cs.used(),
-            occupied(&cs),
+        assert!(
+            is_count_right_at(&cs, position),
             "a second put left the count behind"
         );
 
         let slot: u64 = kani::any();
         let _ = cs.delete(slot);
-        assert_eq!(cs.used(), occupied(&cs), "delete left the count behind");
-
-        // The sweep, which frees any number of slots in one pass and is the other freeing path.
-        let wanted: u8 = kani::any();
-        cs.delete_matching(|o| *o == wanted);
-        assert_eq!(
-            cs.used(),
-            occupied(&cs),
-            "delete_matching left the count behind"
+        assert!(
+            is_count_right_at(&cs, position),
+            "delete left the count behind"
         );
 
         // And the mark never fell while all that was happening, which is what makes it a mark.
@@ -672,66 +810,85 @@ mod verification {
     /// **The free-slot word is the set of empty slots, after every mutator.**
     ///
     /// `insert` believes the word: "free" over an occupied slot overwrites a live capability, and
-    /// "occupied" over an empty one leaks it. Bits at and above `N` must stay clear too, or a full
-    /// table would not be a zero word. Checked over every small-table state and slot index, through
-    /// every mutator. `#[kani::unwind(4)]`, by `the_count_is_the_slots`'s argument.
+    /// "occupied" over an empty one leaks it. Bits at and above the size must stay clear too, or a
+    /// full table would not be zero words, and no slot at or above the size may ever be filled.
+    /// Checked over every state `any_capability_table` builds and every slot index, through every
+    /// mutator. The bound: every size up to [`PROOF_STORAGE`], assumed below, and every bit
+    /// position, through one symbolic position. `#[kani::unwind(5)]`, by
+    /// `the_count_is_the_slots`'s argument.
     ///
     #[kani::proof]
-    #[kani::unwind(4)]
+    #[kani::unwind(5)]
     fn the_free_mask_is_the_empty_slots() {
-        fn empties(cs: &CapabilityTable<u8, 3>) -> u64 {
-            (0..3)
-                .filter(|&i| cs.slot(i).is_none())
-                .fold(0, |m, i| m | (1 << i))
-        }
+        let position = any_position();
         let capability = || Capability {
             object: kani::any(),
             rights: Rights::from_word(kani::any()),
         };
-        let mut cs = any_small_capability_table();
-        assert_eq!(cs.free_mask(), empties(&cs), "wrong after put");
+        let size: usize = kani::any();
+        kani::assume(size <= PROOF_STORAGE);
+        let mut cs = any_capability_table(size);
+        assert!(is_free_set_right_at(&cs, position), "wrong after put");
+
+        // The sweep runs first, on the window's arbitrary state, so its walk sees at most three
+        // bits.
+        let wanted: u8 = kani::any();
+        cs.delete_matching(|o| *o == wanted);
+        assert!(
+            is_free_set_right_at(&cs, position),
+            "wrong after delete_matching"
+        );
 
         let _ = cs.insert(capability());
-        assert_eq!(cs.free_mask(), empties(&cs), "wrong after insert");
+        assert!(is_free_set_right_at(&cs, position), "wrong after insert");
 
         let _ = cs.insert_at_or_above(kani::any(), capability());
-        assert_eq!(
-            cs.free_mask(),
-            empties(&cs),
+        assert!(
+            is_free_set_right_at(&cs, position),
             "wrong after insert_at_or_above"
         );
 
         let _ = cs.put(kani::any(), capability());
-        assert_eq!(cs.free_mask(), empties(&cs), "wrong after a second put");
+        assert!(
+            is_free_set_right_at(&cs, position),
+            "wrong after a second put"
+        );
 
         let _ = cs.delete(kani::any());
-        assert_eq!(cs.free_mask(), empties(&cs), "wrong after delete");
+        assert!(is_free_set_right_at(&cs, position), "wrong after delete");
 
         let _ = cs.insert_at(kani::any(), capability());
-        assert_eq!(cs.free_mask(), empties(&cs), "wrong after insert_at");
+        assert!(is_free_set_right_at(&cs, position), "wrong after insert_at");
 
         let _ = cs.derive(kani::any(), kani::any(), Rights::from_word(kani::any()));
-        assert_eq!(cs.free_mask(), empties(&cs), "wrong after derive");
+        assert!(is_free_set_right_at(&cs, position), "wrong after derive");
 
-        let wanted: u8 = kani::any();
-        cs.delete_matching(|o| *o == wanted);
-        assert_eq!(cs.free_mask(), empties(&cs), "wrong after delete_matching");
-        assert_eq!(cs.is_empty(), empties(&cs) == 0b111);
+        assert_eq!(
+            cs.is_empty(),
+            (0..FREE_WORDS).all(|w| cs.free_mask()[w] == storage::all_free_word(size, w))
+        );
+        // `is_free_set_right_at` also said no door filled a slot at or above the size; nor did the
+        // size move.
+        assert_eq!(cs.size(), size, "the size changed");
     }
 
     /// Falsification: replayable `falsifications/verification.the_peak_never_falls_and_a_floor_insert_stays_above_its_floor.patch`
     /// **The high-water mark never falls across any operation, and a floor insert never lands
-    /// below its floor.** One symbolic operation of any kind, applied to a symbolic table.
-    /// `#[kani::unwind(4)]`, by `the_count_is_the_slots`'s argument.
+    /// below its floor.** One symbolic operation of any kind, applied to a symbolic table. The
+    /// bound: every size up to [`PROOF_STORAGE`], assumed below. `#[kani::unwind(5)]`, by
+    /// `the_count_is_the_slots`'s argument: a word holds at most the window's three occupied bits,
+    /// and the four free-slot words are the longest loop.
     ///
     #[kani::proof]
-    #[kani::unwind(4)]
+    #[kani::unwind(5)]
     fn the_peak_never_falls_and_a_floor_insert_stays_above_its_floor() {
         let capability = Capability {
             object: kani::any(),
             rights: Rights::from_word(kani::any()),
         };
-        let mut cs = any_small_capability_table();
+        let size: usize = kani::any();
+        kani::assume(size <= PROOF_STORAGE);
+        let mut cs = any_capability_table(size);
         let before = cs.peak();
         let floor: u64 = kani::any();
         let wanted: u8 = kani::any();
@@ -755,10 +912,12 @@ mod verification {
     /// **Consume-on-use is final.** For every table state and every slot (in bounds or not), once
     /// `delete` succeeds the slot answers `NoSuchSlot` to both `get` and a second `delete`. This is
     /// the mechanism that makes a one-shot reply capability one-shot: the caller of `delete` removes
-    /// it the instant it is invoked.
+    /// it the instant it is invoked. The bound: every size up to [`PROOF_STORAGE`], assumed below.
     #[kani::proof]
     fn a_deleted_capability_stays_deleted() {
-        let mut cs = any_small_capability_table();
+        let size: usize = kani::any();
+        kani::assume(size <= PROOF_STORAGE);
+        let mut cs = any_capability_table(size);
         let slot: u64 = kani::any();
         if cs.delete(slot).is_ok() {
             // The storage itself, before the accessors, so the claim rests on the array rather than
@@ -776,13 +935,16 @@ mod verification {
     /// **Delete is slot-local.** Deleting any slot, in bounds or not, leaves every other slot
     /// exactly as it was. A server holding one-shot Reply capabilities for two callers consumes
     /// one and must still hold the other, or answering caller A would silently orphan caller B.
+    /// The bound: every size up to [`PROOF_STORAGE`], assumed below.
     #[kani::proof]
     fn delete_touches_only_its_slot() {
-        let mut cs = any_small_capability_table();
+        let size: usize = kani::any();
+        kani::assume(size <= PROOF_STORAGE);
+        let mut cs = any_capability_table(size);
         let victim: u64 = kani::any();
         let other: u64 = kani::any();
         kani::assume(victim != other);
-        kani::assume(other < 3);
+        kani::assume(other < PROOF_STORAGE as u64);
 
         let before = cs.get(other);
         let _ = cs.delete(victim);
@@ -794,12 +956,17 @@ mod verification {
     /// if the derive succeeds then the capability it stored holds no more than the source did, and
     /// holds exactly what was asked (no silent grant of more). There is no reachable input that
     /// widens authority.
+    ///
+    /// The bound: every size from two, the source and the destination, up to [`PROOF_STORAGE`],
+    /// assumed below.
     #[kani::proof]
     fn derive_never_widens_rights() {
         let source_rights = Rights::from_word(kani::any());
         let requested = Rights::from_word(kani::any());
 
-        let mut cs: CapabilityTable<u8, 2> = CapabilityTable::new();
+        let size: usize = kani::any();
+        kani::assume((2..=PROOF_STORAGE).contains(&size));
+        let mut cs = CapabilityTable::<u8, PROOF_STORAGE>::with_size(size).unwrap();
         cs.put(
             0,
             Capability {

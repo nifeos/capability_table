@@ -11,7 +11,7 @@ Expected to fail: `assert!(Rights::from_bits(raw).is_subset_of(Rights::ALL))`, o
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -103,7 +103,7 @@
+@@ -109,7 +109,7 @@
      /// [`bits`](Self::bits), for rights that crossed a boundary in a system call register. Undefined
      /// bits are dropped, so a caller cannot conjure a right that does not exist.
      pub const fn from_bits(bits: u32) -> Rights {
