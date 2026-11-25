@@ -10,12 +10,12 @@ with a free slot below a nonzero floor.
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -271,7 +271,7 @@
-             let above = if floor >= 64 {
-                 0
-             } else {
--                self.free & (u64::MAX << floor)
-+                self.free & (u64::MAX >> floor)
-             };
-             (above != 0).then(|| above.trailing_zeros() as usize)
-         }
+@@ -362,7 +362,7 @@
+                 return None;
+             }
+             // The first word drops the slots below the floor; the words after it count whole.
+-            let mut bits = self.free[word] & (u64::MAX << (floor % WORD_BITS));
++            let mut bits = self.free[word] & (u64::MAX >> (floor % WORD_BITS));
+             loop {
+                 if bits != 0 {
+                     return Some(word * WORD_BITS + bits.trailing_zeros() as usize);

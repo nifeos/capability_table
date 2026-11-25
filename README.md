@@ -19,12 +19,14 @@ size, which is part of the type.
   takes any 32-bit word, such as a system call register, and keeps only the defined bits.
 - `Capability<O>` is an object and its rights. `delegate` copies it with narrower rights, and only
   when it holds `GRANT`. `mint_child` gives a new object the parent's rights exactly.
-- `CapabilityTable<O, N>` holds up to `N` capabilities (at most 64) in a fixed array with a word of
-  free slots. `insert` takes the lowest free slot, `insert_at_or_above` the lowest at or above a
+- `CapabilityTable<O, N>` has storage for `N` capabilities (at most `MAXIMUM_SLOTS`, 256) and a
+  size chosen at creation: `new` takes all `N`, and `with_size` takes fewer. The size never changes,
+  and no slot at or above it is ever filled. The free slots are a set of four 64-bit words, so
+  finding one reads at most four words, and a lookup by slot costs one bounds check. `insert` takes the lowest free slot, `insert_at_or_above` the lowest at or above a
   floor, `insert_at` a named empty slot, and `put` overwrites one. `derive` copies a slot into
   another with narrowed rights, `delete` empties a slot, `delete_matching` empties every slot whose
   object matches, and `iter` walks the occupied slots in order. `used`, `peak` and `capacity` count
-  the slots in use, the most ever in use, and the slots in all.
+  the slots in use, the most ever in use, and the size.
 - With the `peak` feature, `highest_seen` answers the highest occupancy any table in the program
   has reached, with that table's capacity.
 
@@ -60,8 +62,10 @@ assert!(!read_only.intersect(Rights::ALL).allows(Rights::WRITE));
 
 Twelve [Kani](https://github.com/model-checking/kani) harnesses, in `mod verification` at the end of
 `src/lib.rs`. The rights proofs hold for every one of the 2^31 words a `Rights` can hold (its top
-bit is a marker, not a right); the table proofs hold for every state of a three-slot table and every
-slot index.
+bit is a marker, not a right). Each table proof states its bound as an assumption: every size up to
+67 slots, every state of the first three slots, and every state of the three slots where the first
+free-slot word ends and the second begins (62, 63 and 64), with every other slot empty. That
+includes every state of every table of up to three slots, and every slot index.
 
 - `subset_is_reflexive`: every set of rights is a subset of itself.
 - `subset_is_transitive`: if B is within A and C within B, C is within A, so a chain of
@@ -69,8 +73,9 @@ slot index.
 - `from_bits_cannot_forge_a_right`: for every 32-bit word, `from_bits` holds only defined rights.
 - `subset_matches_allows`: `a.is_subset_of(b)` is exactly `b.allows(a)`.
 - `the_count_is_the_slots`: `used` equals the number of occupied slots after every mutator.
-- `the_free_mask_is_the_empty_slots`: the free-slot word is exactly the set of empty slots, and
-  holds no bit at or above `N`, after every mutator.
+- `the_free_mask_is_the_empty_slots`: the free-slot words are exactly the set of empty slots, hold
+  no bit at or above the size, and no slot at or above the size is ever filled, after every
+  mutator.
 - `the_peak_never_falls_and_a_floor_insert_stays_above_its_floor`: no operation lowers `peak`, and
   `insert_at_or_above` never lands below its floor.
 - `a_deleted_capability_stays_deleted`: once `delete` succeeds, the slot answers `NoSuchSlot` to
@@ -83,8 +88,10 @@ slot index.
 - `split_never_widens_rights`: `mint_child` gives the child exactly the parent's rights.
 
 Each harness has a patch in `falsifications/` that breaks the property it proves, and the proof
-fails on the patched code. Two things lie outside the proofs: tables larger than three slots, which
-the unit tests cover, and `highest_seen`, which is one value shared by every table.
+fails on the patched code. Two things lie outside the proofs: tables past 67 slots, and states
+with slots occupied outside the two windows, such as a full first word that sends a plain `insert`
+into the second, which the unit tests cover up to `MAXIMUM_SLOTS`; and `highest_seen`, which is one
+value shared by every table.
 
 ## Building and testing
 
@@ -141,8 +148,11 @@ the assertion that the patch breaks. `git checkout -- src` reverts the patch.
 
 ## BUGS
 
-- No table holds more than 64 slots: the free-slot word is one `u64`, and `CapabilityTable::new`
-  refuses a larger `N` at compile time.
+- No table holds more than `MAXIMUM_SLOTS` (256) slots, and `CapabilityTable::new` refuses a larger
+  `N` at compile time. The bound may grow and never shrinks. Every table carries all four free-slot
+  words, 32 bytes, whatever its size.
+- The storage is `N` slots whatever the size, so a table created smaller than `N` still occupies all
+  `N`.
 - `REVOKE` is a right like the others; this crate does not say which objects consult it.
 - `highest_seen` is one value for the whole program, across every table of every size, which suits
   a kernel and surprises a library. It is behind the `peak` feature, off by default, and exists only

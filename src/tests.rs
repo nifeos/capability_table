@@ -6,10 +6,10 @@ enum Object {
     PageFrame(u64),
 }
 
-/// **The occupied mask is the occupied slots and nothing above them.** A sweep walks this word
-/// in place of `0..N`, so a bit set for a free slot, or for a slot past `N`, is a visit to
-/// something that is not there; the sweep's own guard would hide it, so the word is checked
-/// itself.
+/// **The occupied masks are the occupied slots and nothing above them.** A sweep walks these
+/// words in place of `0..N`, so a bit set for a free slot, or for a slot past the size, is a visit
+/// to something that is not there; the sweep's own guard would hide it, so the words are checked
+/// themselves.
 #[test]
 fn the_occupied_mask_is_exactly_the_occupied_slots() {
     let capability = |n| Capability {
@@ -17,16 +17,28 @@ fn the_occupied_mask_is_exactly_the_occupied_slots() {
         rights: Rights::ALL,
     };
     let mut cs: CapabilityTable<Object, 8> = CapabilityTable::new();
-    assert_eq!(cs.occupied_mask(), 0);
+    assert_eq!(cs.occupied_word(0), 0);
     cs.insert_at(2, capability(1)).unwrap();
     cs.insert_at(5, capability(2)).unwrap();
-    assert_eq!(cs.occupied_mask(), 0b0010_0100);
+    assert_eq!(cs.occupied_word(0), 0b0010_0100);
     cs.delete(2).unwrap();
-    assert_eq!(cs.occupied_mask(), 0b0010_0000);
+    assert_eq!(cs.occupied_word(0), 0b0010_0000);
     let mut full: CapabilityTable<Object, 64> = CapabilityTable::new();
-    assert_eq!(full.occupied_mask(), 0);
+    assert_eq!(full.occupied_word(0), 0);
     full.insert_at(63, capability(3)).unwrap();
-    assert_eq!(full.occupied_mask(), 1 << 63);
+    assert_eq!(full.occupied_word(0), 1 << 63);
+    // Across a word: slot 64 is bit 0 of the second word, and the first word does not see it.
+    let mut wide: CapabilityTable<Object, 130> = CapabilityTable::new();
+    wide.insert_at(64, capability(4)).unwrap();
+    wide.insert_at(129, capability(5)).unwrap();
+    assert_eq!(
+        [
+            wide.occupied_word(0),
+            wide.occupied_word(1),
+            wide.occupied_word(2)
+        ],
+        [0, 1, 1 << 1]
+    );
 }
 
 /// **A new process holds nothing.** The decision, as an assertion.
@@ -277,25 +289,25 @@ fn rights_arithmetic() {
 ///
 /// `PEAK` is shared by every table in this binary, so a floor cannot pin either half: `>>` for
 /// `<<` in the peak half and `&` for `|` or `^` in the ceiling half survived one. Exactness holds because
-/// `fetch_max` only raises and no other test exceeds 64 of 64 (the free-slot edge test ties it,
-/// writing the same word); a test that outgrows it fails loudly.
+/// `fetch_max` only raises and no table in this binary can exceed `MAXIMUM_SLOTS` of
+/// `MAXIMUM_SLOTS` (the bound test ties it, writing the same word).
 #[test]
 fn the_high_water_word_reports_the_occupancy_and_the_capacity_that_set_it() {
     let capability = Capability {
         object: Object::PageFrame(3),
         rights: Rights::READ,
     };
-    // Full at sixty-four, the most a table may have (`MAXIMUM_SLOTS`).
-    let mut cs: CapabilityTable<Object, 64> = CapabilityTable::new();
-    for _ in 0..64 {
+    // Full at the most a table may have.
+    let mut cs: CapabilityTable<Object, MAXIMUM_SLOTS> = CapabilityTable::new();
+    for _ in 0..MAXIMUM_SLOTS {
         cs.insert(capability)
-            .expect("sixty-four slots hold sixty-four");
+            .expect("a table of the bound holds the bound");
     }
 
     assert_eq!(
         highest_seen(),
-        (64, 64),
-        "no table in this test binary can exceed 64 of 64, so this record is the one standing"
+        (MAXIMUM_SLOTS, MAXIMUM_SLOTS),
+        "no table in this test binary can exceed the bound, so this record is the one standing"
     );
 }
 
@@ -310,27 +322,27 @@ fn the_free_slot_word_fills_to_zero_and_hands_back_the_lowest_hole() {
         rights: Rights::READ,
     };
     let mut cs: CapabilityTable<Object, 64> = CapabilityTable::new();
-    assert_eq!(cs.free_mask(), u64::MAX);
+    assert_eq!(cs.free_mask(), [u64::MAX, 0, 0, 0]);
     for want in 0..64u64 {
         assert_eq!(cs.insert(capability), Ok(want));
     }
-    assert_eq!(cs.free_mask(), 0, "a full table is a zero word");
+    assert_eq!(cs.free_mask(), [0; 4], "a full table is zero words");
     assert_eq!(cs.insert(capability), Err(Error::NoFreeSlot));
 
     cs.delete(20).unwrap();
     cs.delete(7).unwrap();
-    assert_eq!(cs.free_mask(), (1 << 20) | (1 << 7));
+    assert_eq!(cs.free_mask(), [(1 << 20) | (1 << 7), 0, 0, 0]);
     assert_eq!(cs.insert(capability), Ok(7), "lowest hole first");
     assert_eq!(cs.insert(capability), Ok(20));
     assert_eq!(cs.used(), 64);
 
     // A small table's bits above N stay clear, so full is still zero there too.
     let mut small: CapabilityTable<Object, 3> = CapabilityTable::new();
-    assert_eq!(small.free_mask(), 0b111);
+    assert_eq!(small.free_mask(), [0b111, 0, 0, 0]);
     for _ in 0..3 {
         small.insert(capability).unwrap();
     }
-    assert_eq!(small.free_mask(), 0);
+    assert_eq!(small.free_mask(), [0; 4]);
     assert_eq!(small.insert(capability), Err(Error::NoFreeSlot));
 }
 
@@ -574,8 +586,8 @@ fn an_empty_slot_is_no_larger_than_a_capability() {
         size_of::<Capability<u64>>()
     );
     assert_eq!(size_of::<Capability<u64>>(), 16);
-    // 64 slots of 16 bytes, the `u64` free word and two `u16` counts, rounded to eight.
-    assert_eq!(size_of::<CapabilityTable<u64, 64>>(), 1040);
+    // 64 slots of 16 bytes, the four `u64` free words and three `u16` counts, rounded to eight.
+    assert_eq!(size_of::<CapabilityTable<u64, 64>>(), 1064);
 }
 
 /// The marker bit is no right: `from_bits` drops bit 31 with every other undefined bit, and
@@ -591,4 +603,86 @@ fn the_marker_bit_is_no_right() {
         std::format!("{:?}", Rights::READ.union(Rights::GRANT)),
         "Rights(5)"
     );
+}
+
+/// **A table sized at creation answers to its size, not its storage.** Slots at and above the size
+/// are out of range to every door, and the size never changes: deleting cannot shrink it and
+/// filling cannot grow it.
+#[test]
+fn a_table_sized_at_creation_answers_to_its_size() {
+    let capability = |n| Capability {
+        object: Object::PageFrame(n),
+        rights: Rights::ALL,
+    };
+    assert!(CapabilityTable::<Object, 8>::with_size(9).is_none());
+    let mut cs = CapabilityTable::<Object, 8>::with_size(5).unwrap();
+    assert_eq!((cs.size(), cs.capacity()), (5, 5));
+    assert_eq!(cs.free_mask(), [0b1_1111, 0, 0, 0]);
+    // A size that ends inside a later word sets that word's bits only up to the size.
+    let partial = CapabilityTable::<Object, 256>::with_size(100).unwrap();
+    assert_eq!(partial.free_mask(), [u64::MAX, (1 << 36) - 1, 0, 0]);
+    for want in 0..5 {
+        assert_eq!(cs.insert(capability(want)), Ok(want));
+    }
+    assert_eq!(cs.insert(capability(9)), Err(Error::NoFreeSlot));
+    assert_eq!(
+        cs.insert_at_or_above(5, capability(9)),
+        Err(Error::NoFreeSlot)
+    );
+    assert_eq!(cs.insert_at(5, capability(9)), Err(Error::NoSuchSlot));
+    assert_eq!(cs.put(7, capability(9)), Err(Error::NoSuchSlot));
+    assert_eq!(cs.derive(0, 6, Rights::READ), Err(Error::NoSuchSlot));
+    assert_eq!(cs.get(5), Err(Error::NoSuchSlot));
+    cs.delete_matching(|_| true);
+    assert!(cs.is_empty());
+    assert_eq!(cs.size(), 5);
+    // A table of no slots holds nothing and refuses everything.
+    let mut none = CapabilityTable::<Object, 8>::with_size(0).unwrap();
+    assert_eq!(none.insert(capability(1)), Err(Error::NoFreeSlot));
+    assert_eq!(none.free_mask(), [0; 4]);
+}
+
+/// **The free-slot set crosses its words.** At the bound every word is in use, first-free carries
+/// from one word to the next, a floor in a later word skips the earlier ones, and the walks visit
+/// every word in order.
+#[test]
+fn the_free_slot_set_spans_its_words() {
+    let capability = |n| Capability {
+        object: Object::PageFrame(n),
+        rights: Rights::READ,
+    };
+    let mut cs: CapabilityTable<Object, MAXIMUM_SLOTS> = CapabilityTable::new();
+    assert_eq!(cs.free_mask(), [u64::MAX; 4]);
+    for want in 0..MAXIMUM_SLOTS as u64 {
+        assert_eq!(cs.insert(capability(want % 3)), Ok(want));
+    }
+    assert_eq!(cs.free_mask(), [0; 4]);
+    cs.delete(200).unwrap();
+    cs.delete(65).unwrap();
+    assert_eq!(cs.free_mask(), [0, 1 << 1, 0, 1 << 8]);
+    assert_eq!(cs.insert_at_or_above(66, capability(0)), Ok(200));
+    assert_eq!(cs.insert(capability(2)), Ok(65));
+    assert_eq!(
+        cs.insert_at_or_above(255, capability(0)),
+        Err(Error::NoFreeSlot)
+    );
+    assert_eq!(
+        cs.insert_at_or_above(256, capability(0)),
+        Err(Error::NoFreeSlot)
+    );
+    // The walk visits every occupied slot of every word, lowest first.
+    extern crate std;
+    let slots: std::vec::Vec<u64> = cs.iter().map(|(slot, _)| slot).collect();
+    assert_eq!(
+        slots,
+        (0..MAXIMUM_SLOTS as u64).collect::<std::vec::Vec<_>>()
+    );
+    // The sweep reaches every word: a third of the slots hold object 1.
+    cs.delete_matching(|o| *o == Object::PageFrame(1));
+    assert_eq!(cs.used(), MAXIMUM_SLOTS - MAXIMUM_SLOTS / 3);
+    assert!(cs.iter().all(|(_, c)| c.object != Object::PageFrame(1)));
+    assert_eq!(cs.free_mask()[3] & (1 << 62), 0, "slot 254 holds object 2");
+    assert_ne!(cs.free_mask()[3] & (1 << 61), 0, "slot 253 held object 1");
+    // A floor in a later word lands there.
+    assert_eq!(cs.insert_at_or_above(130, capability(1)), Ok(130));
 }

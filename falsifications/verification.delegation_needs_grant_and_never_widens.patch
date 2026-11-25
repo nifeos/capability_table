@@ -10,7 +10,7 @@ without the `GRANT` bit and a request inside it.
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -128,9 +128,6 @@
+@@ -159,9 +159,6 @@
      /// Without `GRANT` the answer is [`Error::GrantRequired`], whatever `rights` asks for. With it,
      /// asking for a right the source lacks is [`Error::CannotWiden`], not a silent clamp.
      pub fn delegate(&self, rights: Rights) -> Result<Capability<O>, Error> {

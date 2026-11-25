@@ -14,7 +14,7 @@ before)`, on any table with an occupied slot other than the victim.
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -433,6 +433,9 @@
+@@ -547,6 +547,9 @@
      pub fn delete(&mut self, slot: u64) -> Result<(), Error> {
          let slot = usize::try_from(slot).map_err(|_| Error::NoSuchSlot)?;
          self.empty(slot).ok_or(Error::NoSuchSlot)?;

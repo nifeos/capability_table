@@ -6,6 +6,9 @@ sentence beside it.
 ## Unreleased
 
 - First version.
+- A table's size is chosen at creation (`with_size`) and never changes; `capacity` answers it.
+- The free-slot set is four words, and `MAXIMUM_SLOTS` is 256: 39 slots is the largest table
+  measured in use, and the bound gives it six times the room.
 - A sixth right, `REVOKE`, bit 5. `Rights::ALL` includes it, and `from_bits` keeps it.
 
 ## BUGS
