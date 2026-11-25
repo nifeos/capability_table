@@ -12,7 +12,7 @@ permanently above the truth, the high-water mark with it, and the number a boot
 prints as `capability slots: N of M at peak` becomes an overstatement that nothing
 else in the tree can contradict.
 
-Expected to fail: the second assertion, `assert!(count_agrees_at(&cs, position),
+Expected to fail: the second assertion, `assert!(is_count_right_at(&cs, position),
 "delete_matching left the count behind")`, on any table state where the sweep
 frees an occupied slot. The first passes, because `put` goes through `fill`, which
 this edit does not touch.

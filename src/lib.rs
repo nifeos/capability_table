@@ -225,7 +225,7 @@ impl core::error::Error for Error {}
 ///
 /// It may only grow. A table that was legal stays legal when it grows, and a lower bound would
 /// refuse a table some owner already builds. Growing it widens the free-slot set of every table by
-/// one word per 64 slots. Name: provisional.
+/// one word per 64 slots.
 pub const MAXIMUM_SLOTS: usize = 256;
 
 /// The words of the free-slot set: one bit per slot, up to [`MAXIMUM_SLOTS`].
@@ -267,7 +267,7 @@ mod storage {
         free: [u64; FREE_WORDS],
         /// How many slots the table has: every slot below it may be filled, and none at or above.
         /// Set when the table is made, and never changed after.
-        size: u16,
+        size_slots: u16,
         /// How many of the slots are occupied right now. Maintained by the two doors rather than
         /// counted on demand, because the thing that wants it is a high-water mark and a mark
         /// sampled at a convenient moment is not one.
@@ -308,7 +308,7 @@ mod storage {
 
         /// **An empty table of `size` slots**, or `None` when `size` is more than the storage
         /// holds. The size never changes after: a slot a holder was told it may fill stays one it
-        /// may fill. Name: provisional.
+        /// may fill.
         pub const fn with_size(size: usize) -> Option<Self> {
             // The compile-time wall `MAXIMUM_SLOTS` describes, evaluated for each `N` that is
             // instantiated: the one constructor refuses storage the free-slot set cannot cover.
@@ -331,7 +331,7 @@ mod storage {
                 slots: [const { None }; N],
                 free,
                 // At most `N`, which the assertion bounds by `MAXIMUM_SLOTS`, which fits a `u16`.
-                size: size as u16,
+                size_slots: size as u16,
                 used: 0,
                 peak: 0,
             })
@@ -339,7 +339,7 @@ mod storage {
 
         /// How many slots the table has, set when it was made.
         pub const fn size(&self) -> usize {
-            self.size as usize
+            self.size_slots as usize
         }
 
         /// The capability in `slot`, or `None` for an empty or out-of-range one. A slot at or above
@@ -386,7 +386,7 @@ mod storage {
         /// [`delete_matching`](super::CapabilityTable::delete_matching) walks these so a sweep
         /// costs a table's occupancy, not its capacity.
         pub(super) fn occupied_word(&self, word: usize) -> u64 {
-            !self.free[word] & all_free_word(self.size as usize, word)
+            !self.free[word] & all_free_word(self.size_slots as usize, word)
         }
 
         /// Whether every slot is empty: one compare, because the count already knows.
@@ -398,7 +398,7 @@ mod storage {
         /// the size; otherwise whether it was empty before. Clears the slot's free bit, and if the
         /// slot was empty, counts the growth and raises the high-water mark.
         pub(super) fn fill(&mut self, slot: usize, capability: Capability<O>) -> Option<bool> {
-            if slot >= self.size as usize {
+            if slot >= self.size_slots as usize {
                 return None;
             }
             let s = self.slots.get_mut(slot)?;
@@ -414,7 +414,7 @@ mod storage {
                 if self.used > self.peak {
                     self.peak = self.used;
                     #[cfg(all(target_has_atomic = "32", feature = "peak"))]
-                    note_peak(self.peak, self.size as usize);
+                    note_peak(self.peak, self.size_slots as usize);
                 }
             }
             Some(was_empty)
@@ -720,21 +720,22 @@ mod verification {
     }
 
     /// The free-slot set's bit at `position`.
-    fn free_bit(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
+    fn is_free_bit_set(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
         cs.free_mask()[position / 64] & (1 << (position % 64)) != 0
     }
 
     /// Whether the free-slot set agrees with the array at `position`: its bit is set exactly when
     /// the slot is below the size and empty, and a slot at or above the size is always empty.
-    fn free_agrees_at(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
+    fn is_free_set_right_at(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
         let empty = cs.slot(position).is_none();
-        free_bit(cs, position) == (position < cs.size() && empty) && (position < cs.size() || empty)
+        is_free_bit_set(cs, position) == (position < cs.size() && empty)
+            && (position < cs.size() || empty)
     }
 
     /// Whether the count agrees with the array: `used` is the number of occupied bits, and the
     /// occupied bit at `position` is set exactly when the slot holds a capability. Over every
     /// `position`, the two together say `used` is the number of occupied slots.
-    fn count_agrees_at(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
+    fn is_count_right_at(cs: &CapabilityTable<u8, PROOF_STORAGE>, position: usize) -> bool {
         let occupied_bits: u32 = (0..FREE_WORDS)
             .map(|word| cs.occupied_word(word).count_ones())
             .sum();
@@ -762,7 +763,7 @@ mod verification {
         kani::assume(size <= PROOF_STORAGE);
         let mut cs = any_capability_table(size);
         assert!(
-            count_agrees_at(&cs, position),
+            is_count_right_at(&cs, position),
             "the count is wrong at the start"
         );
 
@@ -771,7 +772,7 @@ mod verification {
         let wanted: u8 = kani::any();
         cs.delete_matching(|o| *o == wanted);
         assert!(
-            count_agrees_at(&cs, position),
+            is_count_right_at(&cs, position),
             "delete_matching left the count behind"
         );
 
@@ -784,7 +785,7 @@ mod verification {
             },
         );
         assert!(
-            count_agrees_at(&cs, position),
+            is_count_right_at(&cs, position),
             "insert_at_or_above left the count behind"
         );
         let _ = cs.put(
@@ -795,14 +796,14 @@ mod verification {
             },
         );
         assert!(
-            count_agrees_at(&cs, position),
+            is_count_right_at(&cs, position),
             "a second put left the count behind"
         );
 
         let slot: u64 = kani::any();
         let _ = cs.delete(slot);
         assert!(
-            count_agrees_at(&cs, position),
+            is_count_right_at(&cs, position),
             "delete left the count behind"
         );
 
@@ -832,40 +833,46 @@ mod verification {
         let size: usize = kani::any();
         kani::assume(size <= PROOF_STORAGE);
         let mut cs = any_capability_table(size);
-        assert!(free_agrees_at(&cs, position), "wrong after put");
+        assert!(is_free_set_right_at(&cs, position), "wrong after put");
 
         // The sweep runs first, on the window's arbitrary state, so its walk sees at most three
         // bits.
         let wanted: u8 = kani::any();
         cs.delete_matching(|o| *o == wanted);
-        assert!(free_agrees_at(&cs, position), "wrong after delete_matching");
+        assert!(
+            is_free_set_right_at(&cs, position),
+            "wrong after delete_matching"
+        );
 
         let _ = cs.insert(capability());
-        assert!(free_agrees_at(&cs, position), "wrong after insert");
+        assert!(is_free_set_right_at(&cs, position), "wrong after insert");
 
         let _ = cs.insert_at_or_above(kani::any(), capability());
         assert!(
-            free_agrees_at(&cs, position),
+            is_free_set_right_at(&cs, position),
             "wrong after insert_at_or_above"
         );
 
         let _ = cs.put(kani::any(), capability());
-        assert!(free_agrees_at(&cs, position), "wrong after a second put");
+        assert!(
+            is_free_set_right_at(&cs, position),
+            "wrong after a second put"
+        );
 
         let _ = cs.delete(kani::any());
-        assert!(free_agrees_at(&cs, position), "wrong after delete");
+        assert!(is_free_set_right_at(&cs, position), "wrong after delete");
 
         let _ = cs.insert_at(kani::any(), capability());
-        assert!(free_agrees_at(&cs, position), "wrong after insert_at");
+        assert!(is_free_set_right_at(&cs, position), "wrong after insert_at");
 
         let _ = cs.derive(kani::any(), kani::any(), Rights::from_word(kani::any()));
-        assert!(free_agrees_at(&cs, position), "wrong after derive");
+        assert!(is_free_set_right_at(&cs, position), "wrong after derive");
 
         assert_eq!(
             cs.is_empty(),
             (0..FREE_WORDS).all(|w| cs.free_mask()[w] == storage::all_free_word(size, w))
         );
-        // `free_agrees_at` also said no door filled a slot at or above the size; nor did the
+        // `is_free_set_right_at` also said no door filled a slot at or above the size; nor did the
         // size move.
         assert_eq!(cs.size(), size, "the size changed");
     }
@@ -963,7 +970,7 @@ mod verification {
         let requested = Rights::from_word(kani::any());
 
         let size: usize = kani::any();
-        kani::assume(2 <= size && size <= PROOF_STORAGE);
+        kani::assume((2..=PROOF_STORAGE).contains(&size));
         let mut cs = CapabilityTable::<u8, PROOF_STORAGE>::with_size(size).unwrap();
         cs.put(
             0,

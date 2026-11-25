@@ -62,9 +62,10 @@ assert!(!read_only.intersect(Rights::ALL).allows(Rights::WRITE));
 
 Twelve [Kani](https://github.com/model-checking/kani) harnesses, in `mod verification` at the end of
 `src/lib.rs`. The rights proofs hold for every one of the 2^31 words a `Rights` can hold (its top
-bit is a marker, not a right). Each table proof states its bound as an assumption: every size up to
-67 slots, every state of the first three slots, and every state of the three slots where the first
-free-slot word ends and the second begins (62, 63 and 64), with every other slot empty. That
+bit is a marker, not a right). Each table proof states its bound as an assumption. It covers every size up to
+67 slots and every state of two windows of three slots, with every other slot empty. One window
+is the first three slots; the other is where the first free-slot word ends and the second begins
+(62, 63 and 64). That
 includes every state of every table of up to three slots, and every slot index.
 
 - `subset_is_reflexive`: every set of rights is a subset of itself.
@@ -88,10 +89,10 @@ includes every state of every table of up to three slots, and every slot index.
 - `split_never_widens_rights`: `mint_child` gives the child exactly the parent's rights.
 
 Each harness has a patch in `falsifications/` that breaks the property it proves, and the proof
-fails on the patched code. Two things lie outside the proofs: tables past 67 slots, and states
-with slots occupied outside the two windows, such as a full first word that sends a plain `insert`
-into the second, which the unit tests cover up to `MAXIMUM_SLOTS`; and `highest_seen`, which is one
-value shared by every table.
+fails on the patched code. Three things lie outside the proofs. Two are
+tables past 67 slots and slots occupied outside the two windows, such as a full first word that
+sends a plain `insert` into the second; the unit tests cover both up to `MAXIMUM_SLOTS`. The third
+is `highest_seen`, which is one value shared by every table.
 
 ## Building and testing
 
