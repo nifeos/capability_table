@@ -3,9 +3,9 @@
 # A line without a reason is refused, and a line naming a survivor that no longer exists is
 # refused too, so this list can only shrink by a diff that says why.
 
-src/lib.rs:96 # every caller passes a word with the marker bit clear, so `^` sets it as `|` does
+src/lib.rs:102 # every caller passes a word with the marker bit clear, so `^` sets it as `|` does
 src/lib.rs:58 # `1 << 0` and `1 >> 0` are both 1, so READ keeps its bit
-src/lib.rs:337 # `>=` also stores and reports a peak equal to the old one, which changes neither the field nor the shared maximum
-src/lib.rs:516 # the peak sits in the high half and the ceiling in the low half, so `|` and `^` pack the same word
-src/lib.rs:472 # `|=` never clears the lowest bit, so the walk never ends and the run times out, which is the mutant caught
-src/lib.rs:489 # `|=`, `+` or `/` can leave the lowest bit set, so the sweep never ends and the run times out, which is the mutant caught
+src/lib.rs:343 # `>=` also stores and reports a peak equal to the old one, which changes neither the field nor the shared maximum
+src/lib.rs:522 # the peak sits in the high half and the ceiling in the low half, so `|` and `^` pack the same word
+src/lib.rs:478 # `|=` never clears the lowest bit, so the walk never ends and the run times out, which is the mutant caught
+src/lib.rs:495 # `|=`, `+` or `/` can leave the lowest bit set, so the sweep never ends and the run times out, which is the mutant caught

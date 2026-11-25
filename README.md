@@ -14,9 +14,9 @@ size, which is part of the type.
 
 ## What it does
 
-- `Rights` is a set of five rights (`READ`, `WRITE`, `GRANT`, `ENUMERATE`, `BIND`) with `union`,
-  `intersect`, `allows` and `is_subset_of`, and no operation that widens. `from_bits` takes any
-  32-bit word, such as a system call register, and keeps only the defined bits.
+- `Rights` is a set of six rights (`READ`, `WRITE`, `GRANT`, `ENUMERATE`, `BIND`, `REVOKE`) with
+  `union`, `intersect`, `allows` and `is_subset_of`, and no operation that widens. `from_bits`
+  takes any 32-bit word, such as a system call register, and keeps only the defined bits.
 - `Capability<O>` is an object and its rights. `delegate` copies it with narrower rights, and only
   when it holds `GRANT`. `mint_child` gives a new object the parent's rights exactly.
 - `CapabilityTable<O, N>` holds up to `N` capabilities (at most 64) in a fixed array with a word of
@@ -143,6 +143,7 @@ the assertion that the patch breaks. `git checkout -- src` reverts the patch.
 
 - No table holds more than 64 slots: the free-slot word is one `u64`, and `CapabilityTable::new`
   refuses a larger `N` at compile time.
+- `REVOKE` is a right like the others; this crate does not say which objects consult it.
 - `highest_seen` is one value for the whole program, across every table of every size, which suits
   a kernel and surprises a library. It is behind the `peak` feature, off by default, and exists only
   on targets with 32-bit atomics.

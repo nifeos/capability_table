@@ -6,6 +6,7 @@ sentence beside it.
 ## Unreleased
 
 - First version.
+- A sixth right, `REVOKE`, bit 5. `Rights::ALL` includes it, and `from_bits` keeps it.
 
 ## BUGS
 

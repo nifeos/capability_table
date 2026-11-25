@@ -390,9 +390,10 @@ fn rights_bits_are_the_wire_format() {
             Rights::WRITE.bits(),
             Rights::GRANT.bits(),
             Rights::ENUMERATE.bits(),
-            Rights::BIND.bits()
+            Rights::BIND.bits(),
+            Rights::REVOKE.bits()
         ],
-        [1, 2, 4, 8, 16]
+        [1, 2, 4, 8, 16, 32]
     );
     // Every defined bit is in ALL, and ALL defines nothing that is not a named right.
     assert_eq!(
@@ -402,6 +403,7 @@ fn rights_bits_are_the_wire_format() {
             | Rights::GRANT.bits()
             | Rights::ENUMERATE.bits()
             | Rights::BIND.bits()
+            | Rights::REVOKE.bits()
     );
     // Undefined bits are dropped, never reinterpreted.
     assert_eq!(Rights::from_bits(!Rights::ALL.bits()), Rights::NONE);
@@ -583,7 +585,7 @@ fn the_marker_bit_is_no_right() {
     assert_eq!(Rights::from_bits(u32::MAX), Rights::ALL);
     assert_eq!(Rights::from_bits(1 << 31), Rights::NONE);
     assert_eq!(Rights::NONE.bits(), 0);
-    assert_eq!(Rights::ALL.bits(), 0b1_1111);
+    assert_eq!(Rights::ALL.bits(), 0b11_1111);
     extern crate std;
     assert_eq!(
         std::format!("{:?}", Rights::READ.union(Rights::GRANT)),

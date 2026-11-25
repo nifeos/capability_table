@@ -75,6 +75,11 @@ impl Rights {
     /// which objects consult it.
     pub const BIND: Rights = Rights::from_word(1 << 4);
 
+    /// **The right to revoke: to withdraw what was passed on from this capability.** Distinct from
+    /// [`GRANT`](Self::GRANT), so a holder may lend a thing without the power to take back what
+    /// others lent from it, or the other way round. An owner decides which objects consult it.
+    pub const REVOKE: Rights = Rights::from_word(1 << 5);
+
     /// **Every defined bit.** [`from_bits`](Self::from_bits) masks against this, so a right that is
     /// missing here is silently dropped at every delegation: adding a constant above without
     /// widening this mask produces a right that cannot survive being passed on.
@@ -82,7 +87,8 @@ impl Rights {
         .union(Rights::WRITE)
         .union(Rights::GRANT)
         .union(Rights::ENUMERATE)
-        .union(Rights::BIND);
+        .union(Rights::BIND)
+        .union(Rights::REVOKE);
 
     /// The raw bit pattern, for carrying rights across a boundary as an integer (a system call
     /// register). [`from_bits`](Self::from_bits) is the inverse.
