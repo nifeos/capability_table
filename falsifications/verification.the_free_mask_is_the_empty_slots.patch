@@ -12,7 +12,7 @@ a reviewer checking `empty` sees the `take` and the decrement it always had.
 
 Expected to fail: `assert!(is_free_set_right_at(&cs, position), "wrong after
 delete_matching")`, on any table state where the sweep frees an occupied slot. The
-assertion before it passes, because `put` goes through `fill`, which is untouched.
+assertion before it passes, because `insert_at` goes through `fill`, which is untouched.
 
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
