@@ -23,10 +23,10 @@ size, which is part of the type.
   size chosen at creation: `new` takes all `N`, and `with_size` takes fewer. The size never changes,
   and no slot at or above it is ever filled. The free slots are a set of four 64-bit words, so
   finding one reads at most four words, and a lookup by slot costs one bounds check. `insert` takes the lowest free slot, `insert_at_or_above` the lowest at or above a
-  floor, `insert_at` a named empty slot, and `put` overwrites one. `derive` copies a slot into
-  another with narrowed rights, `delete` empties a slot, `delete_matching` empties every slot whose
-  object matches, and `iter` walks the occupied slots in order. `used`, `peak` and `capacity` count
-  the slots in use, the most ever in use, and the size.
+  floor, and `insert_at` a named empty slot; none overwrites a live capability. `derive` returns
+  a copy of a slot with narrowed rights, for the caller to file in this table or another,
+  `delete` empties a slot, `delete_matching` empties every slot whose object matches, and `iter`
+  walks the occupied slots in order. `used` and `capacity` count the slots in use and the size.
 - With the `peak` feature, `highest_seen` answers the highest occupancy any table in the program
   has reached, with that table's capacity.
 
@@ -77,12 +77,12 @@ includes every state of every table of up to three slots, and every slot index.
 - `the_free_mask_is_the_empty_slots`: the free-slot words are exactly the set of empty slots, hold
   no bit at or above the size, and no slot at or above the size is ever filled, after every
   mutator.
-- `the_peak_never_falls_and_a_floor_insert_stays_above_its_floor`: no operation lowers `peak`, and
-  `insert_at_or_above` never lands below its floor.
+- `the_peak_never_falls_and_a_floor_insert_stays_above_its_floor`: no operation lowers a table's
+  high-water mark, and `insert_at_or_above` never lands below its floor.
 - `a_deleted_capability_stays_deleted`: once `delete` succeeds, the slot answers `NoSuchSlot` to
   `get` and to a second `delete`.
 - `delete_touches_only_its_slot`: deleting a slot leaves every other slot as it was.
-- `derive_never_widens_rights`: a successful `derive` stores exactly the rights asked for, and they
+- `derive_never_widens_rights`: a successful `derive` returns exactly the rights asked for, and they
   are within the source's.
 - `delegation_needs_grant_and_never_widens`: `delegate` succeeds exactly when the source holds
   `GRANT` and the request is within the source, and the copy holds exactly the request.
@@ -158,8 +158,6 @@ the assertion that the patch breaks. `git checkout -- src` reverts the patch.
 - `highest_seen` is one value for the whole program, across every table of every size, which suits
   a kernel and surprises a library. It is behind the `peak` feature, off by default, and exists only
   on targets with 32-bit atomics.
-- `insert_at` refuses an occupied slot and returns the slot; `put` overwrites and returns `()`. The
-  two names read close for operations that differ in what they do to a live capability.
 - No enum is `#[non_exhaustive]`, so a variant added to `Error` after the first release breaks a
   caller's `match`.
 

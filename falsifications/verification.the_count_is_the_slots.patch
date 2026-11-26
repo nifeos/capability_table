@@ -14,7 +14,7 @@ else in the tree can contradict.
 
 Expected to fail: the second assertion, `assert!(is_count_right_at(&cs, position),
 "delete_matching left the count behind")`, on any table state where the sweep
-frees an occupied slot. The first passes, because `put` goes through `fill`, which
+frees an occupied slot. The first passes, because `insert_at` goes through `fill`, which
 this edit does not touch.
 
 diff --git a/src/lib.rs b/src/lib.rs

@@ -59,7 +59,7 @@ fn a_new_capability_table_can_name_nothing() {
 #[test]
 fn delete_matching_takes_the_matched_and_spares_the_neighbor() {
     let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
-    cs.put(
+    cs.insert_at(
         0,
         Capability {
             object: Object::PageFrame(0x1000),
@@ -67,7 +67,7 @@ fn delete_matching_takes_the_matched_and_spares_the_neighbor() {
         },
     )
     .unwrap();
-    cs.put(
+    cs.insert_at(
         1,
         Capability {
             object: Object::Console,
@@ -75,7 +75,7 @@ fn delete_matching_takes_the_matched_and_spares_the_neighbor() {
         },
     )
     .unwrap();
-    cs.put(
+    cs.insert_at(
         15,
         Capability {
             object: Object::PageFrame(0x2000),
@@ -99,7 +99,7 @@ fn delete_matching_takes_the_matched_and_spares_the_neighbor() {
 #[test]
 fn an_unheld_slot_is_not_permission_denied_it_is_nothing() {
     let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
-    cs.put(
+    cs.insert_at(
         0,
         Capability {
             object: Object::Console,
@@ -122,7 +122,7 @@ fn an_unheld_slot_is_not_permission_denied_it_is_nothing() {
 #[test]
 fn derive_cannot_widen_rights() {
     let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
-    cs.put(
+    cs.insert_at(
         0,
         Capability {
             object: Object::PageFrame(0x1000),
@@ -132,26 +132,23 @@ fn derive_cannot_widen_rights() {
     .unwrap();
 
     // Narrowing to nothing: fine.
-    assert!(cs.derive(0, 1, Rights::NONE).is_ok());
+    assert!(cs.derive(0, Rights::NONE).is_ok());
     // Same rights: fine.
-    assert!(cs.derive(0, 2, Rights::READ.union(Rights::GRANT)).is_ok());
+    assert!(cs.derive(0, Rights::READ.union(Rights::GRANT)).is_ok());
 
     // **Asking for WRITE when we only hold READ.**
-    assert_eq!(
-        cs.derive(0, 3, Rights::WRITE).err(),
-        Some(Error::CannotWiden)
-    );
-    assert_eq!(cs.derive(0, 3, Rights::ALL).err(), Some(Error::CannotWiden));
+    assert_eq!(cs.derive(0, Rights::WRITE).err(), Some(Error::CannotWiden));
+    assert_eq!(cs.derive(0, Rights::ALL).err(), Some(Error::CannotWiden));
 
-    // And the failed derive left nothing behind.
-    assert_eq!(cs.get(3).err(), Some(Error::NoSuchSlot));
+    // And deriving filed nothing: the copy is the caller's to file.
+    assert_eq!(cs.used(), 1);
 }
 
 /// A narrowed capability names the **same object**. Delegation moves authority, not identity.
 #[test]
 fn a_derived_capability_names_the_same_object_with_less_authority() {
     let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
-    cs.put(
+    cs.insert_at(
         0,
         Capability {
             object: Object::PageFrame(0x4000),
@@ -160,7 +157,8 @@ fn a_derived_capability_names_the_same_object_with_less_authority() {
     )
     .unwrap();
 
-    cs.derive(0, 5, Rights::READ).unwrap();
+    let copy = cs.derive(0, Rights::READ).unwrap();
+    cs.insert_at(5, copy).unwrap();
 
     let original = cs.get(0).unwrap();
     let copy = cs.get(5).unwrap();
@@ -173,13 +171,12 @@ fn a_derived_capability_names_the_same_object_with_less_authority() {
 /// Deriving from an empty slot fails. You cannot lend what you do not hold.
 #[test]
 fn you_cannot_delegate_what_you_do_not_hold() {
-    let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
-    assert_eq!(cs.derive(3, 4, Rights::READ).err(), Some(Error::NoSuchSlot));
+    let cs: CapabilityTable<Object, 16> = CapabilityTable::new();
+    assert_eq!(cs.derive(3, Rights::READ).err(), Some(Error::NoSuchSlot));
 }
 
 /// **A capability without `GRANT` cannot be passed on, whatever is asked for.** The refusal is
-/// its own answer, distinct from asking for more than is held, and a refused derive leaves the
-/// destination slot empty.
+/// its own answer, distinct from asking for more than is held.
 #[test]
 fn a_capability_without_grant_cannot_be_passed_on() {
     let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
@@ -187,7 +184,7 @@ fn a_capability_without_grant_cannot_be_passed_on() {
         object: Object::Console,
         rights: Rights::READ.union(Rights::WRITE),
     };
-    cs.put(0, source).unwrap();
+    cs.insert_at(0, source).unwrap();
 
     assert_eq!(
         source.delegate(Rights::READ).err(),
@@ -197,11 +194,7 @@ fn a_capability_without_grant_cannot_be_passed_on() {
         source.delegate(Rights::NONE).err(),
         Some(Error::GrantRequired)
     );
-    assert_eq!(
-        cs.derive(0, 1, Rights::READ).err(),
-        Some(Error::GrantRequired)
-    );
-    assert_eq!(cs.get(1).err(), Some(Error::NoSuchSlot));
+    assert_eq!(cs.derive(0, Rights::READ).err(), Some(Error::GrantRequired));
 }
 
 /// With `GRANT`, `delegate` narrows to exactly what was asked, names the same object, and refuses
@@ -230,9 +223,9 @@ fn iter_walks_the_occupied_slots_in_order() {
     };
     let mut cs: CapabilityTable<Object, 64> = CapabilityTable::new();
     assert_eq!(cs.iter().count(), 0);
-    cs.put(40, capability(4)).unwrap();
-    cs.put(3, capability(1)).unwrap();
-    cs.put(63, capability(6)).unwrap();
+    cs.insert_at(40, capability(4)).unwrap();
+    cs.insert_at(3, capability(1)).unwrap();
+    cs.insert_at(63, capability(6)).unwrap();
     cs.delete(40).unwrap();
     let mut walk = cs.iter();
     assert_eq!(walk.next(), Some((3, capability(1))));
@@ -261,7 +254,7 @@ fn an_occupied_slot_is_not_a_full_table() {
 #[test]
 fn deleting_a_capability_makes_the_object_unnameable() {
     let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
-    cs.put(
+    cs.insert_at(
         0,
         Capability {
             object: Object::Console,
@@ -452,8 +445,8 @@ fn insert_at_fills_exactly_the_named_slot() {
 /// that filled the table and then emptied it reached the wall, and a count sampled afterwards
 /// says it did not.
 ///
-/// Every mutator that can occupy an empty slot is exercised here (`insert`, `insert_at`, and
-/// `put` over an empty slot), because each has its own call to the private growth path and a
+/// Every mutator that can occupy an empty slot is exercised here (`insert`, `insert_at` and
+/// `insert_at_or_above`), because each has its own call to the private growth path and a
 /// missed one would be invisible: the number would simply be a little too low, forever.
 #[test]
 fn the_peak_records_what_was_reached_and_never_what_is_left() {
@@ -466,11 +459,11 @@ fn the_peak_records_what_was_reached_and_never_what_is_left() {
 
     assert_eq!(cs.insert(capability), Ok(0));
     assert_eq!(cs.insert_at(2, capability), Ok(2));
-    cs.put(3, capability).expect("slot 3 is in range");
+    assert_eq!(cs.insert_at_or_above(3, capability), Ok(3));
     assert_eq!((cs.used(), cs.peak()), (3, 3));
 
-    // Replacing an occupant is not growth.
-    cs.put(3, capability).expect("slot 3 is in range");
+    // A refused occupant is not growth.
+    assert_eq!(cs.insert_at(3, capability), Err(Error::SlotOccupied));
     assert_eq!((cs.used(), cs.peak()), (3, 3));
 
     // And emptying it does not lower the mark.
@@ -522,7 +515,7 @@ fn the_global_high_water_mark_is_never_below_a_table_that_reached_it() {
 #[test]
 fn a_slot_past_the_width_of_usize_names_nothing() {
     let mut cs: CapabilityTable<Object, 16> = CapabilityTable::new();
-    cs.put(
+    cs.insert_at(
         0,
         Capability {
             object: Object::Console,
@@ -538,7 +531,7 @@ fn a_slot_past_the_width_of_usize_names_nothing() {
             rights: Rights::READ,
         };
         assert_eq!(
-            cs.put(slot, again).err(),
+            cs.insert_at(slot, again).err(),
             Some(Error::NoSuchSlot),
             "{slot:#x}"
         );
@@ -630,8 +623,7 @@ fn a_table_sized_at_creation_answers_to_its_size() {
         Err(Error::NoFreeSlot)
     );
     assert_eq!(cs.insert_at(5, capability(9)), Err(Error::NoSuchSlot));
-    assert_eq!(cs.put(7, capability(9)), Err(Error::NoSuchSlot));
-    assert_eq!(cs.derive(0, 6, Rights::READ), Err(Error::NoSuchSlot));
+    assert_eq!(cs.derive(6, Rights::READ), Err(Error::NoSuchSlot));
     assert_eq!(cs.get(5), Err(Error::NoSuchSlot));
     cs.delete_matching(|_| true);
     assert!(cs.is_empty());

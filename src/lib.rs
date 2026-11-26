@@ -153,8 +153,7 @@ pub struct Capability<O> {
 impl<O: Copy> Capability<O> {
     /// **Pass this capability on with `rights`, or refuse.** The one delegation rule: the holder
     /// must hold [`Rights::GRANT`], and the copy may only narrow. The copy names the same object.
-    /// [`CapabilityTable::derive`] files the result, and an owner that reads its source under a
-    /// lock of its own calls this on what it read, so the rule has one body.
+    /// [`CapabilityTable::derive`] applies it to a slot, so the rule has one body.
     ///
     /// Without `GRANT` the answer is [`Error::GrantRequired`], whatever `rights` asks for. With it,
     /// asking for a right the source lacks is [`Error::CannotWiden`], not a silent clamp.
@@ -274,8 +273,7 @@ mod storage {
         used: u16,
         /// The largest `used` this table has ever held. **Never decreases**, which is the whole
         /// point: the number a boot reports is what it *reached*, not what it happens to be holding
-        /// when somebody looks. See [`peak`](Self::peak), and `highest_seen` behind the
-        /// `peak` feature.
+        /// when somebody looks. `highest_seen`, behind the `peak` feature, reports it.
         peak: u16,
     }
 
@@ -346,8 +344,8 @@ mod storage {
         }
 
         /// The capability in `slot`, or `None` for an empty or out-of-range one. A slot at or above
-        /// the size is empty, which [`fill`](Self::fill) keeps true, so the array's bound is the
-        /// only check.
+        /// the size is empty, which every caller of [`fill`](Self::fill) keeps true, so the array's
+        /// bound is the only check.
         pub(super) fn slot(&self, slot: usize) -> Option<Capability<O>> {
             self.slots.get(slot).copied().flatten()
         }
@@ -391,30 +389,23 @@ mod storage {
             self.used == 0
         }
 
-        /// **Door one: put `capability` in `slot`**, occupied or not. `None` if `slot` is at or above
-        /// the size; otherwise whether it was empty before. Clears the slot's free bit, and if the
-        /// slot was empty, counts the growth and raises the high-water mark.
-        pub(super) fn fill(&mut self, slot: usize, capability: Capability<O>) -> Option<bool> {
-            if slot >= self.size_slots as usize {
-                return None;
-            }
-            let s = self.slots.get_mut(slot)?;
-            let was_empty = s.is_none();
-            *s = Some(capability);
+        /// **Door one: put `capability` in the empty `slot`**, which is below the size. Every
+        /// caller found the slot in the free-slot set or checked it, so no slot is overwritten and
+        /// none at or above the size is filled. Clears the slot's free bit, counts the growth and
+        /// raises the high-water mark.
+        pub(super) fn fill(&mut self, slot: usize, capability: Capability<O>) {
+            self.slots[slot] = Some(capability);
             self.free[slot / WORD_BITS] &= !(1u64 << (slot % WORD_BITS));
-            if was_empty {
-                // Wrapping, because the wrap cannot happen and this is on every reply-capability
-                // mint (release builds check overflow). `used` counts
-                // occupied slots (`the_count_is_the_slots` proves it), this slot was empty, so the
-                // result is at most the size, which `MAXIMUM_SLOTS` bounds below `u16::MAX`.
-                self.used = self.used.wrapping_add(1);
-                if self.used > self.peak {
-                    self.peak = self.used;
-                    #[cfg(all(target_has_atomic = "32", feature = "peak"))]
-                    note_peak(self.peak, self.size_slots as usize);
-                }
+            // Wrapping, because the wrap cannot happen and this is on every reply-capability mint
+            // (release builds check overflow). `used` counts occupied slots
+            // (`the_count_is_the_slots` proves it), this slot was empty, so the result is at most
+            // the size, which `MAXIMUM_SLOTS` bounds below `u16::MAX`.
+            self.used = self.used.wrapping_add(1);
+            if self.used > self.peak {
+                self.peak = self.used;
+                #[cfg(all(target_has_atomic = "32", feature = "peak"))]
+                note_peak(self.peak, self.size_slots as usize);
             }
-            Some(was_empty)
         }
 
         /// **Door two: take whatever is in `slot`**, leaving it empty. `None` if `slot` is out of
@@ -433,10 +424,10 @@ mod storage {
             self.used as usize
         }
 
-        /// **The most slots this table has ever held at once**, which is the number a capacity
-        /// decision is actually made against. `used` at any given moment is whatever the last few
-        /// calls left behind; this is the wall the table came closest to.
-        pub fn peak(&self) -> usize {
+        /// The most slots this table has ever held at once, for the proofs and the tests. A
+        /// program reads the mark through `highest_seen`, behind the `peak` feature.
+        #[cfg_attr(not(any(test, kani)), allow(dead_code))]
+        pub(super) fn peak(&self) -> usize {
             self.peak as usize
         }
     }
@@ -518,24 +509,20 @@ impl<O: Copy, const N: usize> CapabilityTable<O, N> {
         Ok(slot)
     }
 
-    /// Put a capability in a specific slot, replacing whatever was there. This is the door for
-    /// building a table to a known shape (a loader, the proof builder); it consults no rights, so
-    /// authority moves through [`derive`](Self::derive) and not through this.
-    pub fn put(&mut self, slot: u64, capability: Capability<O>) -> Result<(), Error> {
-        let slot = usize::try_from(slot).map_err(|_| Error::NoSuchSlot)?;
-        self.fill(slot, capability).ok_or(Error::NoSuchSlot)?;
-        Ok(())
-    }
-
-    /// **Copy a capability into another slot, with rights that are no greater.**
+    /// **A copy of the capability in slot `from`, with rights that are no greater**, for the
+    /// caller to file.
     ///
-    /// The only way authority moves between slots, by [`Capability::delegate`]: the source must
-    /// hold [`Rights::GRANT`] ([`Error::GrantRequired`]), and asking for rights it does not hold is
-    /// [`Error::CannotWiden`], not a silent clamp: a loader that quietly grants less than was asked
-    /// for is a loader nobody can reason about.
-    pub fn derive(&mut self, from: u64, to: u64, rights: Rights) -> Result<(), Error> {
-        let copy = self.get(from)?.delegate(rights)?;
-        self.put(to, copy)
+    /// The way authority is passed on, by [`Capability::delegate`]: an empty slot is
+    /// [`Error::NoSuchSlot`], the source must hold [`Rights::GRANT`] ([`Error::GrantRequired`]),
+    /// and asking for rights it does not hold is [`Error::CannotWiden`], not a silent clamp: a
+    /// loader that quietly grants less than was asked for is a loader nobody can reason about.
+    ///
+    /// The copy is returned rather than filed because it usually lands somewhere else: another
+    /// table, or a message waiting for its receiver. An owner that must read the source and file
+    /// the copy with nothing between them calls this under the hold that files it, then
+    /// [`insert`](Self::insert) or [`insert_at`](Self::insert_at) on the table that receives it.
+    pub fn derive(&self, from: u64, rights: Rights) -> Result<Capability<O>, Error> {
+        self.get(from)?.delegate(rights)
     }
 
     /// Drop a capability. The object may still exist; **we simply can no longer name it.**
@@ -692,7 +679,7 @@ mod verification {
         for offset in 0..WINDOW {
             let slot = start + offset;
             if slot < size && kani::any() {
-                cs.put(
+                cs.insert_at(
                     slot as u64,
                     Capability {
                         object: kani::any(),
@@ -742,7 +729,7 @@ mod verification {
     /// **The occupancy count is the slots, for every reachable table state.**
     ///
     /// A drifted count reports a high-water mark that was never true. Covers both freeing paths,
-    /// `delete` and `delete_matching`; `any_capability_table` builds through `put`.
+    /// `delete` and `delete_matching`; `any_capability_table` builds through `insert_at`.
     ///
     /// The bound: every size up to [`PROOF_STORAGE`], 67 slots, assumed below, and every slot
     /// index, through one symbolic position. `#[kani::unwind(5)]`: the longest loops are over
@@ -771,7 +758,7 @@ mod verification {
             "delete_matching left the count behind"
         );
 
-        // The floor insert and a second `put` over a slot that may be occupied.
+        // The floor insert, and a targeted insert at a slot that may be occupied, which refuses.
         let _ = cs.insert_at_or_above(
             kani::any(),
             Capability {
@@ -783,7 +770,7 @@ mod verification {
             is_count_right_at(&cs, position),
             "insert_at_or_above left the count behind"
         );
-        let _ = cs.put(
+        let _ = cs.insert_at(
             kani::any(),
             Capability {
                 object: kani::any(),
@@ -792,7 +779,7 @@ mod verification {
         );
         assert!(
             is_count_right_at(&cs, position),
-            "a second put left the count behind"
+            "insert_at left the count behind"
         );
 
         let slot: u64 = kani::any();
@@ -828,7 +815,7 @@ mod verification {
         let size: usize = kani::any();
         kani::assume(size <= PROOF_STORAGE);
         let mut cs = any_capability_table(size);
-        assert!(is_free_set_right_at(&cs, position), "wrong after put");
+        assert!(is_free_set_right_at(&cs, position), "wrong after the build");
 
         // The sweep runs first, on the window's arbitrary state, so its walk sees at most three
         // bits.
@@ -848,20 +835,11 @@ mod verification {
             "wrong after insert_at_or_above"
         );
 
-        let _ = cs.put(kani::any(), capability());
-        assert!(
-            is_free_set_right_at(&cs, position),
-            "wrong after a second put"
-        );
-
         let _ = cs.delete(kani::any());
         assert!(is_free_set_right_at(&cs, position), "wrong after delete");
 
         let _ = cs.insert_at(kani::any(), capability());
         assert!(is_free_set_right_at(&cs, position), "wrong after insert_at");
-
-        let _ = cs.derive(kani::any(), kani::any(), Rights::from_word(kani::any()));
-        assert!(is_free_set_right_at(&cs, position), "wrong after derive");
 
         assert_eq!(
             cs.is_empty(),
@@ -953,21 +931,20 @@ mod verification {
 
     /// Falsification: replayable `falsifications/verification.derive_never_widens_rights.patch`
     /// **The central theorem, on the real `CapabilityTable::derive`.** For any source rights and any request,
-    /// if the derive succeeds then the capability it stored holds no more than the source did, and
+    /// if the derive succeeds then the copy it returns holds no more than the source did, and
     /// holds exactly what was asked (no silent grant of more). There is no reachable input that
     /// widens authority.
     ///
-    /// The bound: every size from two, the source and the destination, up to [`PROOF_STORAGE`],
-    /// assumed below.
+    /// The bound: every size from one, the source, up to [`PROOF_STORAGE`], assumed below.
     #[kani::proof]
     fn derive_never_widens_rights() {
         let source_rights = Rights::from_word(kani::any());
         let requested = Rights::from_word(kani::any());
 
         let size: usize = kani::any();
-        kani::assume((2..=PROOF_STORAGE).contains(&size));
+        kani::assume((1..=PROOF_STORAGE).contains(&size));
         let mut cs = CapabilityTable::<u8, PROOF_STORAGE>::with_size(size).unwrap();
-        cs.put(
+        cs.insert_at(
             0,
             Capability {
                 object: 0u8,
@@ -976,10 +953,7 @@ mod verification {
         )
         .unwrap();
 
-        if cs.derive(0, 1, requested).is_ok() {
-            let derived = cs
-                .slot(1)
-                .expect("a successful derive filled the destination slot");
+        if let Ok(derived) = cs.derive(0, requested) {
             // In raw bits, not through `is_subset_of`: `derive` guards on that predicate, so a
             // claim phrased through it would hold for any consistently wrong `is_subset_of`.
             assert_eq!(
